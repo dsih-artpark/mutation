@@ -1,0 +1,4 @@
+.env
+snpeff_build/
+__pycache__/
+runs/*

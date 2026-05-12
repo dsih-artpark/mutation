@@ -1,0 +1,37 @@
+services:
+  api:
+    platform: linux/amd64
+    build: .
+    container_name: lsdv_api
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    volumes:
+      - ./runs:/app/runs
+
+  worker:
+    platform: linux/amd64
+    build: .
+    container_name: lsdv_worker
+    command: celery -A app.worker.celery worker --loglevel=info
+    depends_on:
+      - redis
+    volumes:
+      - ./runs:/app/runs
+
+  beat:
+    platform: linux/amd64
+    build: .
+    container_name: lsdv_beat
+    command: celery -A app.worker.celery beat --loglevel=info
+    depends_on:
+      - redis
+    volumes:
+      - ./runs:/app/runs
+
+  redis:
+    image: redis:7
+    container_name: lsdv_redis
+    ports:
+      - "6379:6379"

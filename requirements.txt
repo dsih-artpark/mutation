@@ -1,0 +1,9 @@
+fastapi==0.136.1
+uvicorn[standard]
+python-multipart==0.0.27
+celery[redis]
+redis
+tenacity
+python-dotenv==1.2.2
+pandas==2.3.3
+plotly==6.7.0
