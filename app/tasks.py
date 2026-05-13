@@ -25,7 +25,9 @@ def process_fasta(self, file_path: str):
             "--force",
             "--ref", str(REFERENCE),
             "--ctgs", str(local_fasta),
-            "--outdir", str(snippy_out)
+            "--outdir", str(snippy_out),
+            "--ram", "2",
+            "--cpus", "2",
         ])
 
         snps_vcf = snippy_out / "snps.vcf"
