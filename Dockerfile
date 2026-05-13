@@ -19,7 +19,8 @@ RUN conda create -n pipeline -y -c bioconda -c conda-forge \
     snpeff=5.4 \
     openjdk=21 \
     perl-bioperl \
-    gffread
+    gffread \
+    mummer4
 
 SHELL ["conda", "run", "-n", "pipeline", "/bin/bash", "-c"]
 

@@ -18,17 +18,11 @@ def process_fasta(self, file_path: str):
         local_fasta = run_dir / fasta_path.name
         shutil.copy(fasta_path, local_fasta)
 
-        print(f"Run ID: {run_id}")
-        print(f"Run Dir: {run_dir}")
-        print(f"Fasta Path: {fasta_path}")
-        print(f"Local Fasta: {local_fasta}")
-        print(f"Reference Path: {REFERENCE}")
-        print(f"Reference Exists: {REFERENCE.exists()}")
-
         # ===== SNIPPY =====
         snippy_out = run_dir / "snippy"
         run_cmd([
             "snippy",
+            "--force",
             "--ref", str(REFERENCE),
             "--ctgs", str(local_fasta),
             "--outdir", str(snippy_out)

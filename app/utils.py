@@ -1,7 +1,7 @@
 from app.config import DOCKER_CONDA, DOCKER_CONDA_ALT, MAC_CONDA
 import subprocess
 from tenacity import retry, stop_after_attempt, wait_fixed
-
+import glob
 import os
 
 @retry(stop=stop_after_attempt(2), wait=wait_fixed(5))
@@ -24,13 +24,20 @@ def run_cmd(cmd, stdout=None):
         else:
             conda_prefix = MAC_CONDA
     
-    perl_paths = [
-        f"{conda_prefix}/lib/perl5/site_perl",
-        f"{conda_prefix}/lib/perl5/5.32/site_perl"
-    ]
+    # 3. DYNAMICALLY detect installed Perl version — do NOT hardcode 5.32
+    perl_paths = [f"{conda_prefix}/lib/perl5/site_perl"]
+    for version_dir in sorted(glob.glob(f"{conda_prefix}/lib/perl5/[0-9]*")):
+        perl_paths.append(f"{version_dir}/site_perl")
     env["PERL5LIB"] = ":".join(perl_paths)
     
-    # 3. Ensure Conda bin is prioritized in PATH
+    # 4. Ensure Conda bin is prioritized in PATH
     env["PATH"] = f"{conda_prefix}/bin:" + env.get("PATH", "")
     
-    subprocess.run(cmd, check=True, stdout=stdout, env=env)
+    try:
+        subprocess.run(cmd, check=True, stdout=stdout, stderr=subprocess.PIPE, env=env)
+    except subprocess.CalledProcessError as e:
+        # Log stderr so we can see the actual tool error
+        stderr_output = e.stderr.decode(errors="replace") if e.stderr else "N/A"
+        print(f"❌ Command failed (exit {e.returncode}): {' '.join(str(c) for c in cmd)}")
+        print(f"   stderr: {stderr_output}")
+        raise
