@@ -6,19 +6,27 @@
 .env
 .dockerignore
 
-# Local state and scratch
+# Local state and scratch.
+#
+# The `**/` prefixes are load-bearing: a dockerignore pattern is matched against
+# the whole context-relative path and `*` does not cross a `/`, so a bare
+# `__pycache__/` excludes only the one at the context root and ships every
+# app/, tests/ and tools/ copy of it.
 runs/
 .superpowers/
-.pytest_cache/
-__pycache__/
-*.pyc
-*.pyo
+**/.pytest_cache/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
 .DS_Store
 snpeff_build/
 snpEff_summary.html
 
-# Superseded standalone pipeline, kept in-tree for reference only
-ONTpipeline/
+# Superseded standalone pipeline, kept in-tree for reference only.
+# Spelled exactly as the directory is spelled on disk -- dockerignore matching is
+# case-sensitive, so the older `ONTpipeline/` silently excluded nothing and put
+# the whole tree, nested .git included, into every build context.
+ONTPipeline/
 
 # Documentation is not needed at runtime
 docs/

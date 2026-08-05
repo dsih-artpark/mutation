@@ -1,0 +1,46 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # Seven of the runner's safety properties only execute against a real
+      # daemon, and tests/conftest.py skips them when there is none. A hosted
+      # runner has Docker, so a skip here means something is broken rather than
+      # absent -- this turns it into a failure. readme.md promises this.
+      REQUIRE_DOCKER: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # No actions/setup-python and no pip install, deliberately. Every make
+      # target runs inside the dev image, so CI exercises the same interpreter
+      # and the same dependency set a developer has -- and the workflow cannot
+      # drift away from what `make test` does locally.
+      - run: make test
+
+      # Smoke test for the catalogue command, and a check that manifest
+      # discovery still finds every scope from a clean checkout.
+      - run: make images-list
+
+  production-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The default build target must not carry test dependencies
+        run: |
+          docker build -t dharini-runtime-check .
+          # `docker build` with no --target builds the *last* stage in the
+          # Dockerfile. If a stage is ever appended after `runtime`, or if the
+          # compose services lose their explicit target, every deployed host
+          # silently gains pytest and its transitive dependencies.
+          if docker run --rm dharini-runtime-check python -c "import pytest"; then
+            echo "::error::pytest is importable in the production image"
+            exit 1
+          fi

@@ -27,3 +27,10 @@ snpEff_summary.html
 .DS_Store
 .idea/
 .vscode/
+
+# Regenerated deterministically by tools/make_fixtures.py -- not committed.
+fixtures/
+
+# The upstream ONT checkout, kept in-tree for reference. Carries its own .git,
+# so an accidental `git add` would create a broken embedded repository.
+ONTPipeline/

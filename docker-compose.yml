@@ -13,7 +13,12 @@
 # Set RUNS_ROOT and REFS_ROOT to absolute host paths in .env before starting.
 
 x-app: &app
-  build: .
+  build:
+    context: .
+    # Explicit, so that adding a stage after `runtime` in the Dockerfile cannot
+    # quietly ship the developer image -- pytest and its dependencies included --
+    # to production.
+    target: runtime
   platform: linux/amd64
   restart: unless-stopped
   env_file: .env
@@ -60,6 +65,51 @@ services:
     <<: *app
     container_name: dharini_beat
     command: celery -A app.worker.celery beat --loglevel=info
+
+  # Developer workflow: pytest and tools/images.py. Docker is the only thing this
+  # project asks anyone to install, so neither runs on a host Python.
+  #
+  # `profiles:` keeps it out of `docker compose up`. `docker compose run` turns a
+  # service's own profiles on implicitly, so the Makefile needs no --profile flag.
+  dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      target: dev
+      # Native, not the linux/amd64 production is pinned to -- see the
+      # BASE_PLATFORM comment in the Dockerfile. The Makefile supplies it.
+      args:
+        BASE_PLATFORM: ${DHARINI_DEV_PLATFORM:-linux/amd64}
+    platform: ${DHARINI_DEV_PLATFORM:-linux/amd64}
+    # Same path parity trap as RUNS_ROOT above. The docker-marked tests hand
+    # `docker run` a bind-mount source under pytest's tmp_path, and the daemon
+    # resolves that against the HOST filesystem. Mounting this checkout at its
+    # own host path is what makes one path string valid on both sides; mounted
+    # at /app it would not be, and the daemon would silently mount an empty
+    # directory instead. The Makefile sets DHARINI_REPO to $(CURDIR).
+    working_dir: ${DHARINI_REPO:-$PWD}
+    volumes:
+      - ${DHARINI_REPO:-$PWD}:${DHARINI_REPO:-$PWD}
+      # Lets this container start sibling containers -- the same mechanism the
+      # worker uses, which is what makes `-m docker` tests test the real thing.
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - ${DOCKER_GID:-999}
+    environment:
+      # The bind mount writes back to the working tree, so bytecode written as
+      # root inside the container would leave root-owned __pycache__ directories
+      # in a developer's checkout on any Linux host.
+      PYTHONDONTWRITEBYTECODE: "1"
+      # CI sets this to 1 so that the seven docker-marked tests failing to find a
+      # daemon is a failure rather than a skip -- see the docker_required fixture
+      # in tests/conftest.py. Empty on a developer's machine, where skipping is
+      # the right answer.
+      REQUIRE_DOCKER: ${REQUIRE_DOCKER:-}
+    # Deliberately no `env_file: .env` and no depends_on. tests/conftest.py points
+    # DATABASE_URL at SQLite and puts Celery in eager mode, so Postgres and Redis
+    # are never contacted; loading a developer's .env would let a stray local
+    # value decide whether the suite passes.
+    init: true
 
   redis:
     image: redis:7
