@@ -130,9 +130,54 @@ def assert_accessions_agree() -> None:
         )
 
 
+def _mutable_tag(ref: str) -> str | None:
+    """The tag component of a resolved image ref, if it carries one at all.
+
+    A digest-pinned ref (`repo@sha256:...`) has no tag. Otherwise the last
+    colon is a tag separator only when nothing after it contains '/' -- that
+    is what distinguishes an actual tag from a registry port
+    (`localhost:5000/foo:1.0` still ends in the real tag `1.0`, found by the
+    *last* colon) and from a build suffix that happens to contain colons.
+    `quay.io/biocontainers/bamclipper:1.0.0--hdfd78af_2` is a single tag with
+    a literal '--' in it, not a second separator. A ref with no colon at all
+    has no tag to inspect, so it is left alone here.
+    """
+    if "@" in ref:
+        return None
+    _, sep, tag = ref.rpartition(":")
+    if not sep or "/" in tag:
+        return None
+    return tag
+
+
 def assert_images_are_declared_sanely() -> None:
+    """No image may resolve to the mutable tag 'latest'.
+
+    The loop below can never actually fire on its own: `_image()` in
+    app/runtime/manifest.py already raises ManifestError for version ==
+    "latest" before an ImageEntry is built, and discover_manifests() does not
+    catch it -- a manifest that would trip this assertion crashes discovery
+    first, taking every other contract test down with it rather than failing
+    here. Kept anyway as a cheap, harmless sanity check on the manifests as
+    parsed.
+
+    The manifest guard does not cover the two paths that bypass it entirely:
+    images.lock.json (a hand-edited or malformed lock entry whose `ref`
+    carries `:latest` instead of a digest) and the
+    DHARINI_IMAGE__<SCOPE>__<KEY> env override (deliberately unvalidated, as
+    a break-glass mechanism). Both feed into the resolver, so this is checked
+    against what the resolver actually produced -- the same way
+    `_assert_manifest` checks resolved refs against declared repositories.
+    """
     for manifest in discover_manifests().values():
         for key, entry in manifest.images.items():
             assert entry.version != "latest", (
                 f"{manifest.path}: image {key!r} uses the mutable tag 'latest'"
+            )
+
+    for manifest in discover_manifests().values():
+        for ref in resolver.refs_for(manifest.scope):
+            tag = _mutable_tag(ref)
+            assert tag != "latest", (
+                f"{manifest.scope} resolved image {ref!r}, which carries the mutable tag 'latest'"
             )
