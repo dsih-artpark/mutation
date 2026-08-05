@@ -1,0 +1,40 @@
+# Images and reference data used by more than one pipeline.
+#
+# NC_003027 appears twice below: once as the snpEff build argument and once in
+# each asset URL. The alignment reference and the annotation database MUST come
+# from the same accession or variants are annotated against the wrong
+# coordinates and nothing errors. tests/contract.py asserts every occurrence
+# agrees.
+
+schema_version: 1
+scope: shared
+
+images:
+  snpeff-lsdv:
+    source: build
+    dockerfile: docker/snpeff/Dockerfile
+    context: docker/snpeff
+    repository: artpark/dharini-snpeff
+    version: "5.4-lsdv-1"
+    platform: linux/amd64
+    build_args:
+      ACCESSION: NC_003027
+      DB_NAME: LSDV
+
+  snippy:
+    source: build
+    dockerfile: docker/snippy/Dockerfile
+    context: docker/snippy
+    repository: artpark/dharini-snippy
+    version: "4.6.0-1"
+    platform: linux/amd64
+
+assets:
+  reference:
+    url: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003027&rettype=fasta&retmode=text"
+    filename: lsdv_reference.fasta
+    sha256: ""
+  annotation:
+    url: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003027&rettype=gff3&retmode=text"
+    filename: lsdv_reference.gff3
+    sha256: ""

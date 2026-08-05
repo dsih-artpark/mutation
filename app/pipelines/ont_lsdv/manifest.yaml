@@ -1,0 +1,33 @@
+schema_version: 1
+scope: ont-lsdv
+
+images:
+  # minimap2 and samtools share an image because align.py pipes between them;
+  # splitting them would mean materialising an intermediate SAM several times
+  # the size of the BAM. Same reason bcftools and NanoPack are here.
+  core:
+    source: build
+    dockerfile: docker/core/Dockerfile
+    context: docker/core
+    repository: artpark/dharini-ont-core
+    version: "1.0.0"
+    platform: linux/amd64
+
+  # Separate because their Python, PyTorch/TensorFlow and htslib requirements
+  # are irreconcilable. All upstream, so nothing to maintain.
+  medaka:
+    source: registry
+    repository: ontresearch/medaka
+    version: "2.0.1"
+  clair3:
+    source: registry
+    repository: hkubal/clair3
+    version: "v1.0.10"
+  longshot:
+    source: registry
+    repository: staphb/longshot
+    version: "0.4.5"
+  bamclipper:
+    source: registry
+    repository: quay.io/biocontainers/bamclipper
+    version: "1.0.0--hdfd78af_2"
