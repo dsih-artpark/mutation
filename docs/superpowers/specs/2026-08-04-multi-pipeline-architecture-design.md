@@ -364,19 +364,32 @@ RUN micromamba install -y -n base -c bioconda -c conda-forge \
 ENV PATH=/opt/conda/bin:$PATH
 
 RUN set -eux; \
-    cfg="$(dirname "$(ls -d /opt/conda/share/snpeff-* | head -n1)/snpEff.config")/snpEff.config"; \
-    d="$(dirname "$cfg")/data/${DB_NAME}"; mkdir -p "$d"; \
+    share="$(ls -d /opt/conda/share/snpeff-* | head -n1)"; \
+    ln -s "$share" /snpEff; \
+    cfg="/snpEff/snpEff.config"; \
+    d="/snpEff/data/${DB_NAME}"; mkdir -p "$d"; \
     base="https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=${ACCESSION}"; \
     curl -fsSL --retry 3 --retry-delay 5 "${base}&rettype=fasta&retmode=text" -o "$d/sequences.fa"; \
     curl -fsSL --retry 3 --retry-delay 5 "${base}&rettype=gff3&retmode=text"  -o "$d/genes.gff"; \
     test -s "$d/sequences.fa"; \
     grep -q '##gff-version 3' "$d/genes.gff"; \
-    echo "${DB_NAME}.genome : ${DB_NAME}" >> "$cfg"; \
+    grep -q "^${DB_NAME}\.genome" "$cfg" || echo "${DB_NAME}.genome : ${DB_NAME}" >> "$cfg"; \
     snpEff build -gff3 -noCheckCds -noCheckProtein -v "${DB_NAME}"; \
-    test -s "$d/snpEffectPredictor.bin"
+    test -s "$d/snpEffectPredictor.bin"; \
+    test -s "$cfg"
+
+ENV SNPEFF_CONFIG=/snpEff/snpEff.config
 ```
 
-Two deliberate differences from `setup_snpeff_lsdv.sh`:
+**The `/snpEff` symlink is load-bearing.** bioconda installs to
+`snpeff-5.4-<build>`, and the build suffix is not determined by the version pin —
+so the directory is discovered, never assumed. Symlinking it to `/snpEff` gives
+both pipelines a stable path: `ont-lsdv` passes `-c /snpEff/snpEff.config`
+(where the previous `suhas0` image also kept it), and `snippy-fasta` lets snpEff
+self-locate. Neither needs a code change, now or when a future bioconda rebuild
+changes the build number.
+
+Three deliberate differences from `setup_snpeff_lsdv.sh`:
 
 - **`test -s snpEffectPredictor.bin`.** The script's retry loop treats
   `snpEff build` exiting 0 as success, but it can exit 0 having produced no
