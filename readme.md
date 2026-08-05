@@ -7,7 +7,7 @@ no API, database or frontend work.
 | Pipeline | Input | Tools |
 |---|---|---|
 | `snippy-fasta` | assembled FASTA | Snippy → snpEff → interactive plot |
-| `ont-lsdv` | Oxford Nanopore FASTQ | NanoPlot/fastp → minimap2 → BamClipper → bcftools/Longshot/Medaka/Clair3 → consensus → snpEff |
+| `ont-lsdv` | Oxford Nanopore FASTQ | NanoPlot/fastp → minimap2 → ARTIC align_trim → bcftools/Medaka/Clair3 → consensus → snpEff |
 
 ---
 
@@ -53,9 +53,9 @@ Dharini (NestJS)
 
 ### Why tools run in separate containers
 
-Medaka, Clair3 and Longshot have irreconcilable Python, PyTorch/TensorFlow and
-htslib requirements — no single conda environment holds all three. Each tool
-therefore runs in its own image.
+Medaka, Clair3 and ARTIC align_trim have irreconcilable Python,
+PyTorch/TensorFlow and htslib requirements — no single conda environment holds
+all three. Each tool therefore runs in its own image.
 
 They never communicate. Each is **ephemeral**: it starts, runs one command,
 writes a file, and exits. The next tool reads that file. The exchange medium is
@@ -320,26 +320,35 @@ still caught.
 
 ## Local development
 
-Every pipeline stage runs in its own container -- neither pipeline invokes a
-locally installed bioinformatics tool, so there is no conda environment to set
-up. The application itself is a plain Python process:
+**Docker is the only prerequisite.** There is no virtualenv to create, no
+`pip install` to run and no conda environment to set up — not for the
+bioinformatics tools, which have always run in their own containers, and not for
+the application either. Every `make` target runs inside the `dev` stage of this
+repository's own `Dockerfile`:
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
-
 cp .env.example .env      # defaults to SQLite + local runs/ — no Postgres needed
-brew services start redis
+docker compose up -d --build
 
-celery -A app.worker.celery worker --loglevel=info &
-uvicorn app.main:app --reload
+make test                 # the suite, in a container
+make images-list          # what images exist, and who uses them
 ```
 
-Both pipelines need Docker running, and the tool images each manifest declares
-pulled locally:
+`make help` lists the rest: `dev-image`, `images-build`, `images-push`,
+`images-lock`, `images-pull`, `test-fast`, `check`, `shell`.
+
+The `dev` service sits behind a compose profile, so `docker compose up` never
+starts it. It mounts this checkout **at its own host path** and mounts the Docker
+socket, for the reason described under [Path parity](#-path-parity): the
+container-backed tests start sibling containers with bind mounts, and the daemon
+resolves a bind-mount source on the host. Parity is what makes one path string
+valid on both sides. The `Makefile` passes that path as `DHARINI_REPO`.
+
+To pull the tool images each manifest declares, rather than waiting for the first
+run to fetch them:
 
 ```bash
-make images-pull      # or: python tools/images.py pull
+make images-pull
 ```
 
 This needs `images.lock.json`, which does not exist yet — see the warning under
@@ -347,19 +356,41 @@ This needs `images.lock.json`, which does not exist yet — see the warning unde
 pulled on demand the first time a stage needs it, at whatever mutable tag its
 manifest declares.
 
-`make help` lists the rest: `images-build`, `images-push`, `images-lock`,
-`test`, `test-fast`, `check`.
+### What images already exist
+
+Nobody should have to open five manifests to find out. One command shows the
+whole catalogue, discovered by walking the tree rather than from any list:
+
+```bash
+make images-list                # every scope
+make images-list SCOPE=shared   # one scope
+```
+
+For each image it prints the key you would write in `specs.py`, the reference
+actually in force and whether that came from an environment override, an
+`images.lock.json` digest or the manifest tag, whether it is `build` or
+`registry`, whether your daemon already holds it, and which pipelines reference
+it. The shared scope is printed first and its keys are shown fully qualified
+(`shared:snpeff-lsdv`), because that is exactly what an author writing a sixth
+pipeline should type instead of declaring a seventh copy of an image that
+already exists.
 
 ### Tests
 
 ```bash
-pytest tests/ -q      # 145 tests, no bioinformatics tools required
+make test        # everything, including the container-backed runner tests
+make test-fast   # skips anything that needs Docker
+make check       # contracts and manifests only
 ```
 
-Seven of them are marked `docker` and run a real container to prove the
-runner's safety properties; they skip when no daemon is available. `make
-test-fast` skips them explicitly, and CI sets `REQUIRE_DOCKER=1` so the skip
-becomes a failure instead.
+Seven tests are marked `docker` and run a real container to prove the runner's
+safety properties; they skip when no daemon is available. `make test-fast` skips
+them explicitly. `.github/workflows/tests.yml` sets `REQUIRE_DOCKER=1` so that on
+CI — where a daemon is always present — the skip becomes a failure instead.
+
+Those tests start sibling containers through the mounted socket, which is the
+same mechanism the worker uses, so running the suite inside a container tests the
+real thing rather than a simulation of it.
 
 They use synthetic pipelines built from ordinary shell tools, so the whole
 control plane is covered without installing anything heavy. `test_runner.py` is
@@ -385,7 +416,7 @@ every subpackage with `pkgutil` at startup, and each one registers itself.
    a `manifest.yaml` and every custom one has a Dockerfile in this repository
    (`shared/docker/`, `app/pipelines/ont_lsdv/docker/`), built on micromamba +
    bioconda — the `suhas0/*` personal-account images are gone. What remains is
-   that nothing has been published to `artpark/*`: the registry namespace is
+   that nothing has been published to `dsihartpark/*`: the registry namespace is
    unconfirmed and `docker push` has not been authorised. Until it is,
    `make images-push && make images-lock` cannot run.
 2. **There is no `images.lock.json`, so nothing is digest-pinned yet.** The

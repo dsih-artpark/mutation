@@ -90,7 +90,7 @@ snippy-specific code sitting in the shared application layer.
 |---|---|---|
 | D1 | YAML declares **images, assets and fixtures only**; all execution logic, stage order and resource limits stay in Python | A `StageSpec` is only meaningful beside the argv it constrains. Deploy tooling must read images without importing FastAPI/Celery/SQLAlchemy. |
 | D2 | Images are **built and pushed by CI**; the production host only pulls | Fast, reproducible deploys. Builds do not compete with running jobs. Staging and production run byte-identical images. |
-| D3 | Images are published to **public Docker Hub** under `artpark/` | Simple pulls, no read credentials on the host. All content is open-source tooling. |
+| D3 | Images are published to **public Docker Hub** under `dsihartpark/` | Simple pulls, no read credentials on the host. All content is open-source tooling. |
 | D4 | Assets are **declared in the manifest, fetched host-side, namespaced** per scope | References stay swappable, checksums verifiable, no filename collisions between pipelines. |
 | D5 | Pipelines are **authored directly against the `Pipeline` contract** | One source of truth. No port step, no drift. `ONTpipeline/` is deleted once `ont-lsdv` passes an end-to-end run. |
 | D6 | Clients **PUT to a presigned S3 URL**; the service issues the URL and later fetches the object | Bytes never touch our host. |
@@ -187,7 +187,7 @@ images:
     source: build
     dockerfile: docker/snpeff/Dockerfile
     context: docker/snpeff
-    repository: artpark/dharini-snpeff
+    repository: dsihartpark/dharini-snpeff
     version: "5.4-lsdv-1"
     platform: linux/amd64
     build_args:
@@ -198,7 +198,7 @@ images:
     source: build
     dockerfile: docker/snippy/Dockerfile
     context: docker/snippy
-    repository: artpark/dharini-snippy
+    repository: dsihartpark/dharini-snippy
     version: "4.6.0-1"
     platform: linux/amd64
 
@@ -242,7 +242,7 @@ images:
     source: build
     dockerfile: docker/core/Dockerfile
     context: docker/core
-    repository: artpark/dharini-ont-core
+    repository: dsihartpark/dharini-ont-core
     version: "1.0.0"
     platform: linux/amd64
 
@@ -448,10 +448,10 @@ file carries no generation metadata and stays diff-clean.
   "schema_version": 1,
   "images": {
     "shared:snpeff-lsdv": {
-      "repository": "artpark/dharini-snpeff",
+      "repository": "dsihartpark/dharini-snpeff",
       "version": "5.4-lsdv-1",
       "digest": "sha256:…",
-      "ref": "artpark/dharini-snpeff@sha256:…"
+      "ref": "dsihartpark/dharini-snpeff@sha256:…"
     }
   }
 }
@@ -654,7 +654,7 @@ Preflight runs as the first action inside `fetch`:
 - every asset it declares exists on disk
 
 A missing image fails the run in under a second with
-`image artpark/dharini-ont-core@sha256:… not present on this host; run 'make images-pull'`,
+`image dsihartpark/dharini-ont-core@sha256:… not present on this host; run 'make images-pull'`,
 rather than dying at stage 5 with a confusing Docker error. `PreflightFailed`
 subclasses `StageError`, so it flows through the existing failure, recording and
 webhook paths unchanged.

@@ -14,7 +14,7 @@ images:
     source: build
     dockerfile: docker/snpeff/Dockerfile
     context: docker/snpeff
-    repository: artpark/dharini-snpeff
+    repository: dsihartpark/dharini-snpeff
     version: "5.4-lsdv-1"
     platform: linux/amd64
     build_args:
@@ -25,7 +25,7 @@ images:
     source: build
     dockerfile: docker/snippy/Dockerfile
     context: docker/snippy
-    repository: artpark/dharini-snippy
+    repository: dsihartpark/dharini-snippy
     version: "4.6.0-1"
     platform: linux/amd64
 
