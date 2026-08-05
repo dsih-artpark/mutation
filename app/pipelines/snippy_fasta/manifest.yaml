@@ -1,0 +1,7 @@
+# This pipeline declares no images of its own: both tools it uses are shared
+# with ont-lsdv. The manifest still exists so the scope is declared and the
+# contract test can bind the package to it.
+schema_version: 1
+scope: snippy-fasta
+
+images: {}

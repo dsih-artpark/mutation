@@ -3,18 +3,21 @@ import plotly.graph_objects as go
 from urllib.parse import unquote
 import re
 from pathlib import Path
-from .config import RUNS_DIR, DATA_DIR
+from ...config import RUNS_DIR, DATA_DIR
 
-def generate_visualization(run_id: str):
+def generate_visualization(run_id: str, vcf_file=None, output_html=None):
     """
     Generates an interactive Plotly visualization for the given run_id.
-    Fetches the annotated.vcf from the run directory and the GFF3 file from the data folder.
+
+    Defaults to the legacy flat layout (runs/<run_id>/annotated.vcf) so existing
+    runs and the /visualization endpoint keep working. Pipelines on the new
+    contract pass explicit paths, since their files live under output/.
     Returns the path to the generated HTML file.
     """
     run_dir = RUNS_DIR / run_id
-    vcf_file = run_dir / "annotated.vcf"
+    vcf_file = Path(vcf_file) if vcf_file else run_dir / "annotated.vcf"
     gff_file = DATA_DIR / "lsdv_reference_sequence.gff3"
-    output_html = run_dir / "visualization.html"
+    output_html = Path(output_html) if output_html else run_dir / "visualization.html"
 
     if not vcf_file.exists():
         raise FileNotFoundError(f"Annotated VCF not found for run {run_id} at {vcf_file}")
