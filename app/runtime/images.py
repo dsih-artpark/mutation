@@ -35,7 +35,12 @@ def _load_lock() -> dict[str, dict]:
         data = json.loads(LOCK_PATH.read_text())
     except (OSError, ValueError):
         return {}
-    return data.get("images") or {}
+    if not isinstance(data, dict):
+        return {}
+    images = data.get("images")
+    if not isinstance(images, dict):
+        return {}
+    return images
 
 
 class ImageResolver:

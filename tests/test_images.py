@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from app.runtime.images import ImageResolutionError, ImageResolver
+from app.runtime.images import ImageResolutionError, ImageResolver, _load_lock
 from app.runtime.manifest import ImageEntry, Manifest
 
 
@@ -101,3 +101,19 @@ def test_resolved_refs_are_recorded_against_the_requesting_scope(resolver):
         "artpark/dharini-ont-core:1.0.0",
         "artpark/dharini-snpeff:5.4-lsdv-1",
     }
+
+
+def test_load_lock_returns_empty_dict_when_top_level_is_not_an_object(tmp_path, monkeypatch):
+    lock_path = tmp_path / "images.lock.json"
+    lock_path.write_text(json.dumps([1, 2, 3]))
+    monkeypatch.setattr("app.runtime.images.LOCK_PATH", lock_path)
+
+    assert _load_lock() == {}
+
+
+def test_load_lock_returns_empty_dict_when_images_value_is_not_an_object(tmp_path, monkeypatch):
+    lock_path = tmp_path / "images.lock.json"
+    lock_path.write_text(json.dumps({"images": "oops"}))
+    monkeypatch.setattr("app.runtime.images.LOCK_PATH", lock_path)
+
+    assert _load_lock() == {}
