@@ -1,0 +1,24 @@
+# The application image ships source only. Everything below is either a secret,
+# local state, or build-context noise that would otherwise land in a layer via
+# `COPY . /app` -- extractable from the image regardless of runtime env vars.
+.git
+.gitignore
+.env
+.dockerignore
+
+# Local state and scratch
+runs/
+.superpowers/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+snpeff_build/
+snpEff_summary.html
+
+# Superseded standalone pipeline, kept in-tree for reference only
+ONTpipeline/
+
+# Documentation is not needed at runtime
+docs/

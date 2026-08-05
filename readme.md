@@ -314,12 +314,13 @@ still caught.
 
 ## Local development
 
+Every pipeline stage runs in its own container -- neither pipeline invokes a
+locally installed bioinformatics tool, so there is no conda environment to set
+up. The application itself is a plain Python process:
+
 ```bash
-conda create -n lsdv_pipeline python=3.10 -y && conda activate lsdv_pipeline
-conda install -c bioconda -c conda-forge \
-  snippy=4.6.0 samtools=1.17 snpeff openjdk=21 perl-bioperl -y
-./setup_snpeff_lsdv.sh
-pip install -r requirements-dev.txt
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
 
 cp .env.example .env      # defaults to SQLite + local runs/ — no Postgres needed
 brew services start redis
@@ -328,7 +329,15 @@ celery -A app.worker.celery worker --loglevel=info &
 uvicorn app.main:app --reload
 ```
 
-`ont-lsdv` additionally needs Docker running and the tool images pulled.
+Both pipelines need Docker running, and the tool images each manifest declares
+pulled locally:
+
+```bash
+python tools/images.py pull
+```
+
+(The `make` wrapper around `tools/images.py` arrives in a later task; call the
+script directly for now.)
 
 ### Tests
 
