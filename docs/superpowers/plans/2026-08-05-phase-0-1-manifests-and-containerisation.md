@@ -2127,7 +2127,15 @@ def cmd_lock(args) -> None:
         if entry.get("source") == "registry":
             run(["docker", "pull", "--platform", entry.get("platform", "linux/amd64"), ref])
 
-        raw = capture(["docker", "inspect", "--format", "{{index .RepoDigests 0}}", ref])
+        # `{{index .RepoDigests 0}}` is a Go template expression, and `index` on
+        # an empty slice is an execution ERROR -- docker exits non-zero rather
+        # than printing nothing. capture() uses check=True, so without this
+        # guard a never-pushed image raises CalledProcessError instead of the
+        # actionable message below.
+        try:
+            raw = capture(["docker", "inspect", "--format", "{{index .RepoDigests 0}}", ref])
+        except subprocess.CalledProcessError:
+            raw = ""
         digest = raw.split("@", 1)[1] if "@" in raw else ""
         if not digest:
             sys.exit(
