@@ -191,9 +191,9 @@ def test_stage_records_failure_and_reraises(ctx):
 def test_skip_is_recorded_not_silent(ctx):
     """Skipping primer trimming changes how variants must be read, so it has to
     be visible on the run rather than only printed as a warning."""
-    ctx.skip("primer", "no BEDPE supplied")
+    ctx.skip("primer", "no primer BED supplied")
     assert ctx.stage_log[0] == {
-        "name": "primer", "status": "SKIPPED", "detail": "no BEDPE supplied",
+        "name": "primer", "status": "SKIPPED", "detail": "no primer BED supplied",
     }
 
 

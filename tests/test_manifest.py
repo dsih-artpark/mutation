@@ -11,14 +11,14 @@ images:
   core:
     source: build
     dockerfile: docker/core/Dockerfile
-    repository: artpark/demo-core
+    repository: dsihartpark/demo-core
     version: "1.0.0"
     build_args:
       FOO: bar
   upstream:
     source: registry
-    repository: staphb/longshot
-    version: "0.4.5"
+    repository: quay.io/biocontainers/minimap2
+    version: "2.28--he4a0461_0"
 assets:
   reference:
     url: "https://example.invalid/ref.fasta"
@@ -39,7 +39,8 @@ def test_parses_images_and_assets(tmp_path):
     assert manifest.scope == "demo"
     assert manifest.images["core"].source == "build"
     assert manifest.images["core"].build_args == {"FOO": "bar"}
-    assert manifest.images["upstream"].tagged_ref == "staphb/longshot:0.4.5"
+    assert (manifest.images["upstream"].tagged_ref
+            == "quay.io/biocontainers/minimap2:2.28--he4a0461_0")
     assert manifest.assets["reference"].filename == "ref.fasta"
     assert manifest.dir == tmp_path
 
@@ -50,7 +51,7 @@ def test_context_defaults_to_the_dockerfile_directory(tmp_path):
 
 
 def test_latest_tag_is_rejected(tmp_path):
-    text = VALID.replace('version: "0.4.5"', 'version: "latest"')
+    text = VALID.replace('version: "2.28--he4a0461_0"', 'version: "latest"')
     with pytest.raises(ManifestError, match="latest"):
         load_manifest(_write(tmp_path, text))
 

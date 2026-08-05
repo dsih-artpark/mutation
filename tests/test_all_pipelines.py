@@ -139,8 +139,8 @@ def test_no_stage_spec_runs_outside_a_container():
 
 # ------------------------------------------------------- specs.X references
 
-# Matches `specs.CORE_IMAGE`, `specs.ALIGN`, and the second reference in
-# `specs.BAMCLIPPER.with_(image=specs.CORE_IMAGE)`.
+# Matches `specs.CORE_IMAGE`, `specs.ALIGN_TRIM`, and both references on a line
+# that names two, such as `specs.SNPEFF.with_(image=specs.CORE_IMAGE)`.
 _SPECS_ATTRIBUTE = re.compile(r"\bspecs\.([A-Z][A-Z0-9_]*)")
 
 

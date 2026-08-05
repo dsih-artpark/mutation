@@ -16,15 +16,15 @@ from ...runtime.context import RunContext
 from . import specs
 
 SORTED_BAM = "alignment.sorted.bam"
-CLIPPED_BAM = "alignment.primerclipped.bam"
+TRIMMED_BAM = "trimmed.sorted.bam"
 
 
 def prepare_reference(ctx: RunContext) -> Path:
     """Copy the reference into the run's work directory and index it.
 
     Two reasons not to use the shared reference in place: refs/ is mounted
-    read-only so `samtools faidx` could not write its index there, and Longshot
-    and Clair3 both require a .fai alongside the FASTA.
+    read-only so `samtools faidx` could not write its index there, and Clair3
+    and Medaka both require a .fai alongside the FASTA.
     """
     name = str(ctx.param("reference", "lsdv_reference_sequence.fasta"))
 
@@ -42,26 +42,14 @@ def prepare_reference(ctx: RunContext) -> Path:
     return local
 
 
-def active_bam(ctx: RunContext) -> Path:
-    """The BAM downstream stages should consume.
-
-    Prefers the primer-clipped BAM when BamClipper ran. Applied uniformly --
-    the original used it for the variant callers but not for Medaka consensus,
-    which silently reintroduced primer-derived artefacts into the consensus.
-    """
-    clipped = ctx.work_dir / CLIPPED_BAM
-    return clipped if clipped.exists() else ctx.work_dir / SORTED_BAM
-
-
 def called_vcf(ctx: RunContext) -> Path:
     """The VCF produced by whichever caller was selected."""
-    tool = str(ctx.param("variant.tool", "bcftools")).lower()
+    tool = str(ctx.param("variant.tool", "clair3")).lower()
     work = ctx.work_dir
 
     paths = {
         "bcftools": work / "variants.bcftools.vcf.gz",
-        "longshot": work / "variants.longshot.vcf",
-        "medaka": work / "medaka" / "medaka.vcf",
+        "medaka": work / "medaka" / "medaka.vcf.gz",
         "clair3": work / "clair3" / "merge_output.vcf.gz",
     }
     if tool not in paths:
@@ -69,12 +57,33 @@ def called_vcf(ctx: RunContext) -> Path:
     return paths[tool]
 
 
+def medaka_inference_argv(ctx: RunContext, bam: Path, predictions: Path) -> list[str]:
+    """`medaka inference` as both the variant and the consensus path invoke it.
+
+    One definition because the two must agree: the consensus stage reuses the
+    predictions the variant stage wrote, and a differing model or read-group
+    setting between them would mean a file produced under one set of
+    assumptions is consumed under another, with no error.
+    """
+    argv = [
+        "medaka", "inference",
+        "--model", str(ctx.param("medaka.model", "r1041_e82_400bps_sup_v5.2.0")),
+        "--threads", str(threads(ctx, specs.MEDAKA.cpus)),
+    ]
+    # ARTIC align_trim assigns one read group per primer pool, and Medaka
+    # refuses to combine read groups unless told to.
+    if ctx.param("medaka.ignore_read_groups", True):
+        argv.append("--ignore_read_groups")
+    return argv + [str(bam), str(predictions)]
+
+
 def ensure_indexed_vcf(ctx: RunContext, vcf: Path) -> Path:
     """Return a bgzip-compressed, indexed copy of `vcf`.
 
-    Fixes a real defect in the original: `bcftools consensus` requires a
-    compressed and indexed VCF, but the Longshot and Medaka branches passed it a
-    plain .vcf. Consensus generation only ever worked on the bcftools path.
+    Fixes a real defect in the original: `bcftools consensus` and snpEff both
+    require a compressed and indexed VCF, but the Medaka branch handed them a
+    plain .vcf and Clair3's output was never indexed. Consensus generation only
+    ever worked on the bcftools path.
     """
     vcf = Path(vcf)
     if not vcf.exists():

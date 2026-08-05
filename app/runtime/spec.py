@@ -13,9 +13,9 @@ class StageSpec:
     """How to execute one tool.
 
     Every stage names a container image. That is how tools with irreconcilable
-    dependencies (Medaka vs Clair3 vs Longshot) coexist, and it is what makes
-    the resource caps below real: the local execution path applied neither, so
-    a pipeline running on the host could claim the whole box.
+    dependencies (Medaka vs Clair3 vs ARTIC align_trim) coexist, and it is what
+    makes the resource caps below real: the local execution path applied
+    neither, so a pipeline running on the host could claim the whole box.
 
     cpus/memory_gb are advisory requests; the runner clamps them to the
     MAX_STAGE_* ceiling so a mis-declared spec cannot claim the whole box.

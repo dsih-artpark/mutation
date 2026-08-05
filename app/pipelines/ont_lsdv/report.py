@@ -30,7 +30,7 @@ def run(ctx: RunContext) -> Path:
         _THIN,
         f"QC              : {ctx.param('qc.tool', 'nanoplot')}",
         f"Alignment       : minimap2",
-        f"Variant caller  : {ctx.param('variant.tool', 'bcftools')}",
+        f"Variant caller  : {ctx.param('variant.tool', 'clair3')}",
         f"Consensus       : {ctx.param('consensus.tool', 'bcftools')}",
         f"Annotation      : snpEff",
         "",

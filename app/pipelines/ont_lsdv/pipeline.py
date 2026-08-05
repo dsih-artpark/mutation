@@ -18,12 +18,12 @@ from . import align, annotate, common, consensus, primer, qc, report, variant
 
 class OntLsdvPipeline(Pipeline):
     id = "ont-lsdv"
-    version = "1.0.0"
+    version = "1.1.0"
     display_name = "Oxford Nanopore — LSDV"
     description = (
-        "Nanopore FASTQ through QC, minimap2 alignment, optional primer "
-        "trimming, variant calling (bcftools / Longshot / Medaka / Clair3), "
-        "consensus generation and snpEff annotation."
+        "Nanopore FASTQ through QC, minimap2 alignment, optional ARTIC "
+        "align_trim primer trimming, variant calling (bcftools / Medaka / "
+        "Clair3), consensus generation and snpEff annotation."
     )
 
     accepted_extensions = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
@@ -108,13 +108,16 @@ class OntLsdvPipeline(Pipeline):
             "primer": {
                 "type": "object", "additionalProperties": False,
                 "title": "Primer trimming",
-                "description": "For amplicon runs. Needs a primer BEDPE uploaded "
-                               "alongside the reads; the stage is skipped without one.",
+                "description": "For amplicon runs. Needs an ARTIC primer scheme BED "
+                               "uploaded alongside the reads; the stage is skipped "
+                               "without one.",
                 "properties": {
                     "enabled": {
                         "type": "boolean", "default": False,
-                        "description": "Requires a BEDPE upload. Without trimming, variants in "
-                                       "primer-binding regions are unreliable.",
+                        "description": "Requires an ARTIC BED upload whose contig names and "
+                                       "coordinates match the reference exactly. Without "
+                                       "trimming, variants in primer-binding regions are "
+                                       "unreliable.",
                     },
                 },
             },
@@ -127,10 +130,11 @@ class OntLsdvPipeline(Pipeline):
                 "properties": {
                     "tool": {
                         "type": "string",
-                        "enum": ["bcftools", "longshot", "medaka", "clair3"],
-                        "default": "bcftools",
-                        "description": "Medaka and Clair3 run neural-network inference on CPU "
-                                       "and are substantially slower.",
+                        "enum": ["bcftools", "medaka", "clair3"],
+                        "default": "clair3",
+                        "description": "Clair3 and Medaka run neural-network inference on CPU "
+                                       "and are substantially slower than bcftools. Clair3 is "
+                                       "the default: it trades runtime for accuracy.",
                     },
                 },
             },
@@ -152,12 +156,22 @@ class OntLsdvPipeline(Pipeline):
             "medaka": {
                 "type": "object", "additionalProperties": False,
                 "title": "Medaka",
-                "description": "Basecaller-specific Medaka models. The wrong model for "
+                "description": "Basecaller-specific Medaka model. The wrong model for "
                                "the flow cell and chemistry degrades calls silently.",
                 "properties": {
-                    "variant_model": {"type": ["string", "null"], "default": None},
-                    "consensus_model": {
-                        "type": ["string", "null"], "default": "r1041_e82_400bps_sup_v5.2.0"},
+                    "model": {
+                        "type": "string", "default": "r1041_e82_400bps_sup_v5.2.0",
+                        "description": "One model is shared by Medaka variant calling and "
+                                       "Medaka consensus, which reuses the variant stage's "
+                                       "predictions. It must match the basecaller that "
+                                       "produced the reads.",
+                    },
+                    "ignore_read_groups": {
+                        "type": "boolean", "default": True,
+                        "description": "Process every read group together. ARTIC align_trim "
+                                       "assigns one per primer pool, and Medaka refuses to "
+                                       "combine read groups unless told to.",
+                    },
                 },
             },
 
@@ -203,16 +217,19 @@ class OntLsdvPipeline(Pipeline):
 
         fastq = qc.run(ctx)
         bam = align.run(ctx, fastq, reference)
-        bam = primer.run(ctx, bam)
+        bam = primer.run(ctx, bam, reference)
 
-        called = variant.run(ctx, bam, reference, fastq)
-        consensus.run(ctx, called, reference)
+        # Whichever caller ran, this is bgzip-compressed and indexed -- both
+        # bcftools consensus and snpEff require that, and normalising it inside
+        # the variant stage is what lets these two lines stay caller-agnostic.
+        called = variant.run(ctx, bam, reference)
+
+        consensus.run(ctx, bam, called, reference)
         annotated = annotate.run(ctx, called)
 
         # Publish the caller's raw VCF alongside the annotated one; the
         # annotated file is derived, and reviewers often want the original.
-        indexed = common.ensure_indexed_vcf(ctx, called)
-        ctx.artifact(indexed, kind="vcf", label="Called variants (raw)")
+        ctx.artifact(called, kind="vcf", label="Called variants (raw)")
 
         if ctx.param("keep_alignment", False):
             ctx.artifact(bam, kind="alignment", label="Sorted BAM")

@@ -38,7 +38,7 @@ async def create_run(
     file: UploadFile = File(..., description="Primary input (FASTA or FASTQ)"),
     params: str = Form("{}", description="JSON object matching the pipeline's params_schema"),
     callback_url: str | None = Form(None, description="Webhook called when the run finishes"),
-    primer_bed: UploadFile | None = File(None, description="Optional primer BEDPE"),
+    primer_bed: UploadFile | None = File(None, description="Optional ARTIC primer scheme BED"),
     session: Session = Depends(get_session),
 ):
     try:
@@ -91,8 +91,10 @@ async def create_run(
 
     extra_inputs: dict[str, str] = {}
     if primer_bed is not None and primer_bed.filename:
-        await _save_upload(primer_bed, paths.input / "primers.bedpe")
-        extra_inputs["primer_bed"] = "primers.bedpe"
+        # Dharini already posts this field as `primer_bed`, so the name stays
+        # even though the file it carries is now an ARTIC primer scheme.
+        await _save_upload(primer_bed, paths.input / "primers.bed")
+        extra_inputs["primer_bed"] = "primers.bed"
 
     # Reserved keys are stripped before the pipeline sees its params.
     run.params = {**validated, "_input_name": stored_name, "_extra_inputs": extra_inputs}

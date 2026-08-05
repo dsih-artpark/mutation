@@ -1,4 +1,4 @@
-"""Variant calling: bcftools, Longshot, Medaka or Clair3."""
+"""Variant calling: bcftools, Medaka or Clair3."""
 
 from __future__ import annotations
 
@@ -7,34 +7,40 @@ from pathlib import Path
 from ...runtime.context import RunContext
 from ...runtime.runner import sh
 from . import specs
-from .common import called_vcf, threads
+from .common import called_vcf, ensure_indexed_vcf, medaka_inference_argv, threads
 
 
-def run(ctx: RunContext, bam: Path, reference: Path, fastq: Path) -> Path:
-    tool = str(ctx.param("variant.tool", "bcftools")).lower()
+def run(ctx: RunContext, bam: Path, reference: Path) -> Path:
+    tool = str(ctx.param("variant.tool", "clair3")).lower()
 
     with ctx.stage("variant"):
         callers = {
             "bcftools": _bcftools,
-            "longshot": _longshot,
             "medaka": _medaka,
             "clair3": _clair3,
         }
         if tool not in callers:
             raise ValueError(f"unsupported variant caller: {tool}")
 
-        callers[tool](ctx, bam, reference, fastq)
+        callers[tool](ctx, bam, reference)
 
         vcf = called_vcf(ctx)
         ctx.require(vcf, hint=f"{tool} produced no VCF at {vcf}")
         ctx.metric("variant_caller", tool)
+
+        # Normalise inside the stage rather than after it. bcftools consensus
+        # and snpEff both require a bgzip-compressed, indexed VCF and what a
+        # caller leaves behind varies -- Clair3 bgzips but does not index. Doing
+        # it here means a failure is attributed to `variant` instead of to no
+        # stage at all, and no downstream stage has to know which caller ran.
+        vcf = ensure_indexed_vcf(ctx, vcf)
 
     return vcf
 
 
 # ---------------------------------------------------------------- bcftools
 
-def _bcftools(ctx: RunContext, bam: Path, reference: Path, _fastq: Path) -> None:
+def _bcftools(ctx: RunContext, bam: Path, reference: Path) -> None:
     output = ctx.work_dir / "variants.bcftools.vcf.gz"
 
     # --ploidy 1: LSDV is a haploid dsDNA virus. The original omitted this, so
@@ -55,58 +61,33 @@ def _bcftools(ctx: RunContext, bam: Path, reference: Path, _fastq: Path) -> None
     ctx.run(specs.BCFTOOLS, ["bcftools", "index", "-f", "-t", str(output)])
 
 
-# ---------------------------------------------------------------- Longshot
-
-def _longshot(ctx: RunContext, bam: Path, reference: Path, _fastq: Path) -> None:
-    ctx.run(
-        specs.LONGSHOT,
-        [
-            "longshot",
-            "--bam", str(bam),
-            "--ref", str(reference),
-            "--out", str(ctx.work_dir / "variants.longshot.vcf"),
-            "--force_overwrite",
-        ],
-    )
-
-
 # ------------------------------------------------------------------ Medaka
 
-def _medaka(ctx: RunContext, _bam: Path, reference: Path, fastq: Path) -> None:
-    """Medaka consumes reads rather than an alignment.
+def _medaka(ctx: RunContext, bam: Path, reference: Path) -> None:
+    """Medaka's three-step API, run over the alignment.
 
-    Note it receives the *filtered* FASTQ. The original passed the raw upload
-    here while alignment used the filtered reads, so enabling NanoFilt silently
-    gave the two stages different input.
+    It replaces the deprecated `medaka_variant` wrapper, which consumed reads
+    rather than an alignment -- so primer trimming could not reach it, and the
+    caller had to remember to hand it the *filtered* FASTQ or the two stages
+    silently saw different input.
     """
     outdir = ctx.work_dir / "medaka"
-    argv = [
-        "medaka_variant",
-        "-i", str(fastq),
-        "-r", str(reference),
-        "-o", str(outdir),
-        "-t", str(threads(ctx, specs.MEDAKA.cpus)),
-    ]
-    model = ctx.param("medaka.variant_model")
-    if model:
-        argv += ["-m", str(model)]
-
-    ctx.run(specs.MEDAKA, argv)
-
-    # Medaka's output filename has moved between releases; normalise it.
     outdir.mkdir(parents=True, exist_ok=True)
-    target = outdir / "medaka.vcf"
-    if not target.exists():
-        for candidate in ("medaka.annotated.vcf", "round_1.vcf", "variants.vcf"):
-            found = outdir / candidate
-            if found.exists():
-                found.rename(target)
-                break
+
+    predictions = outdir / "predictions.hdf"
+    vcf = outdir / "medaka.vcf"
+
+    ctx.run(specs.MEDAKA, medaka_inference_argv(ctx, bam, predictions))
+    ctx.run(specs.MEDAKA, ["medaka", "vcf", str(predictions), str(reference), str(vcf)])
+
+    # `medaka vcf` writes plain text, and called_vcf() has to name a file that
+    # exists by the time run() asserts on it.
+    ensure_indexed_vcf(ctx, vcf)
 
 
 # ------------------------------------------------------------------ Clair3
 
-def _clair3(ctx: RunContext, bam: Path, reference: Path, _fastq: Path) -> None:
+def _clair3(ctx: RunContext, bam: Path, reference: Path) -> None:
     outdir = ctx.work_dir / "clair3"
     outdir.mkdir(parents=True, exist_ok=True)
 

@@ -203,9 +203,9 @@ def _mutable_tag(ref: str) -> str | None:
     is what distinguishes an actual tag from a registry port
     (`localhost:5000/foo:1.0` still ends in the real tag `1.0`, found by the
     *last* colon) and from a build suffix that happens to contain colons.
-    `quay.io/biocontainers/bamclipper:1.0.0--hdfd78af_2` is a single tag with
-    a literal '--' in it, not a second separator. A ref with no colon at all
-    has no tag to inspect, so it is left alone here.
+    `quay.io/biocontainers/minimap2:2.28--he4a0461_0` is a single tag with a
+    literal '--' in it, not a second separator. A ref with no colon at all has
+    no tag to inspect, so it is left alone here.
     """
     if "@" in ref:
         return None

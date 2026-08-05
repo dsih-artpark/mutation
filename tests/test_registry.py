@@ -29,15 +29,20 @@ def test_every_pipeline_declares_stages_and_schema(pipeline_id):
 def test_defaults_are_applied_recursively():
     params = registry.validate_params("ont-lsdv", {})
     assert params["threads"] == 4
-    assert params["variant"]["tool"] == "bcftools"
+    assert params["variant"]["tool"] == "clair3"
     assert params["nanofilt"]["enabled"] is False
     # Haploid: LSDV is a virus. A diploid default would emit impossible calls.
     assert params["bcftools"]["ploidy"] == 1
+    # align_trim assigns a read group per primer pool, and Medaka refuses to
+    # combine them unless this is set.
+    assert params["medaka"]["ignore_read_groups"] is True
 
 
 def test_override_preserves_sibling_defaults():
-    params = registry.validate_params("ont-lsdv", {"variant": {"tool": "clair3"}})
-    assert params["variant"]["tool"] == "clair3"
+    # bcftools rather than clair3: overriding a field with its own default
+    # would pass whether or not the override was honoured.
+    params = registry.validate_params("ont-lsdv", {"variant": {"tool": "bcftools"}})
+    assert params["variant"]["tool"] == "bcftools"
     assert params["consensus"]["tool"] == "bcftools"
 
 

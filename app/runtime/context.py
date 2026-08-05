@@ -159,7 +159,7 @@ class RunContext:
         return self.paths.input / self.input_name
 
     def extra_input(self, key: str) -> Path | None:
-        """An optional secondary upload, e.g. a primer BEDPE."""
+        """An optional secondary upload, e.g. an ARTIC primer scheme BED."""
         name = self.extra_inputs.get(key)
         return self.paths.input / name if name else None
 
