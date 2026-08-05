@@ -85,7 +85,7 @@ ctx.output_dir                   # published artifacts — retained
 ctx.refs_dir                     # shared references, read-only
 
 with ctx.stage("align"): ...     # timing + peak memory, recorded to Postgres
-ctx.skip("primer", "no BEDPE supplied")
+ctx.skip("primer", "no primer BED supplied")
 
 ctx.run(spec, argv, env=..., stdout_path=...)   # execute a tool
 ctx.require(path)                # assert a tool actually produced its output
@@ -357,9 +357,9 @@ params_schema = {
             "properties": {
                 "tool": {
                     "type": "string",
-                    "enum": ["bcftools", "longshot", "medaka", "clair3"],
-                    "default": "bcftools",
-                    "description": "Medaka and Clair3 run neural-network "
+                    "enum": ["bcftools", "medaka", "clair3"],
+                    "default": "clair3",
+                    "description": "Clair3 and Medaka run neural-network "
                                    "inference on CPU and are much slower.",
                 },
             },
@@ -559,7 +559,7 @@ reason several rules above exist.
 | `sys.exit(1)` on tool failure | Kills the Celery worker rather than failing the task. |
 | Report printing `COMPLETED` unconditionally | A report that says success regardless of what happened is worse than no report. |
 | VCF-path selection copy-pasted into three modules | They drifted. Consensus silently broke for 3 of 4 variant callers. |
-| Plain `.vcf` passed to `bcftools consensus` | It requires bgzip + index. Fails for Longshot and Medaka. |
+| Plain `.vcf` passed to `bcftools consensus` | It requires bgzip + index. Fails for Medaka, whose `medaka vcf` writes plain text. |
 | `samtools sort -@ 8` with no `-m` | Defaults to ~768 MB *per thread* — ~6 GB reserved, OOM-killed in a capped container. |
 | Clair3 without `--include_all_ctgs` | Defaults to human contig names, finds no match on a viral reference, exits 0 having called nothing. |
 | `bcftools call` without `--ploidy 1` | Emits heterozygous genotypes for a haploid virus. |
@@ -571,7 +571,7 @@ reason several rules above exist.
 ## 13. Getting the tool images right
 
 Tool isolation by image is correct and is why this design works: Medaka, Clair3
-and Longshot have irreconcilable Python, PyTorch/TensorFlow and htslib
+and ARTIC align_trim have irreconcilable Python, PyTorch/TensorFlow and htslib
 requirements, and no single conda environment can hold all three.
 
 But an image you cannot rebuild is a liability:
