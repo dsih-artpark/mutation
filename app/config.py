@@ -31,14 +31,11 @@ DATA_DIR = BASE_DIR / "data"
 RUNS_ROOT = Path(os.getenv("RUNS_ROOT", str(BASE_DIR / "runs"))).resolve()
 REFS_ROOT = Path(os.getenv("REFS_ROOT", str(DATA_DIR))).resolve()
 
-UPLOAD_DIR = RUNS_ROOT / "uploads"
-
 # Retained for backwards compatibility with visualization.py and the legacy
 # /status and /visualization endpoints.
 RUNS_DIR = RUNS_ROOT
 
 RUNS_ROOT.mkdir(parents=True, exist_ok=True)
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # --------------------------------------------------------------------------

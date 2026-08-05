@@ -5,7 +5,6 @@ from __future__ import annotations
 import shutil
 import traceback
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from .config import (
     REFS_ROOT,
@@ -401,7 +400,3 @@ def _sweep_orphan_uploads(cutoff: datetime) -> int:
         except OSError:
             continue
     return removed
-
-
-def _run_dir(run_id: str) -> Path:
-    return RUNS_ROOT / run_id

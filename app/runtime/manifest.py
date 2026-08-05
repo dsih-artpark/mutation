@@ -17,7 +17,6 @@ import yaml
 
 SCHEMA_VERSION = 1
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SHARED_SCOPE = "shared"
 
 
 class ManifestError(ValueError):
