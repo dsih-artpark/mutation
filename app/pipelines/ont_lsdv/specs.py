@@ -17,21 +17,21 @@ from ...runtime.spec import StageSpec
 
 img = images_for(__package__)
 
-CORE = img("core")
+CORE_IMAGE = img("core")
 
 _HOUR = 3600
 
 # Memory figures are starting estimates for a ~150 kb genome. The run_stages
 # table records real peak usage per stage -- after ~20 runs, replace these with
 # measured values rather than guesses.
-NANOPLOT = StageSpec(image=CORE, cpus=2, memory_gb=4, timeout_s=_HOUR)
-FASTP = StageSpec(image=CORE, cpus=2, memory_gb=2, timeout_s=_HOUR)
-NANOFILT = StageSpec(image=CORE, cpus=2, memory_gb=2, timeout_s=_HOUR)
-ALIGN = StageSpec(image=CORE, cpus=4, memory_gb=6, timeout_s=2 * _HOUR)
-SAMTOOLS = StageSpec(image=CORE, cpus=2, memory_gb=2, timeout_s=_HOUR)
+NANOPLOT = StageSpec(image=CORE_IMAGE, cpus=2, memory_gb=4, timeout_s=_HOUR)
+FASTP = StageSpec(image=CORE_IMAGE, cpus=2, memory_gb=2, timeout_s=_HOUR)
+NANOFILT = StageSpec(image=CORE_IMAGE, cpus=2, memory_gb=2, timeout_s=_HOUR)
+ALIGN = StageSpec(image=CORE_IMAGE, cpus=4, memory_gb=6, timeout_s=2 * _HOUR)
+SAMTOOLS = StageSpec(image=CORE_IMAGE, cpus=2, memory_gb=2, timeout_s=_HOUR)
 BAMCLIPPER = StageSpec(image=img("bamclipper"), cpus=2, memory_gb=4, timeout_s=_HOUR)
 
-BCFTOOLS = StageSpec(image=CORE, cpus=2, memory_gb=4, timeout_s=2 * _HOUR)
+BCFTOOLS = StageSpec(image=CORE_IMAGE, cpus=2, memory_gb=4, timeout_s=2 * _HOUR)
 LONGSHOT = StageSpec(image=img("longshot"), cpus=2, memory_gb=4, timeout_s=2 * _HOUR)
 
 # Neural-network callers. CPU-only inference on Lightsail (no GPU available),
