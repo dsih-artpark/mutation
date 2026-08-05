@@ -142,11 +142,3 @@ RETENTION_HOURS = int(os.getenv("RETENTION_HOURS", "72"))
 # --------------------------------------------------------------------------
 
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_SIZE", str(5 * 1024**3)))
-
-# --------------------------------------------------------------------------
-# Conda prefixes for locally-executed stages (snippy-fasta pipeline)
-# --------------------------------------------------------------------------
-
-DOCKER_CONDA = "/opt/miniconda3/envs/pipeline"
-DOCKER_CONDA_ALT = "/opt/conda/envs/pipeline"
-MAC_CONDA = "/opt/homebrew/Caskroom/miniconda/base/envs/lsdv_pipeline"
