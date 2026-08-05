@@ -64,6 +64,7 @@ class OntLsdvPipeline(Pipeline):
 
             "filter": {
                 "type": "object", "additionalProperties": False,
+                "title": "Read filtering",
                 "properties": {
                     "mode": {
                         "type": "string", "enum": ["recommended", "manual"],
@@ -88,6 +89,7 @@ class OntLsdvPipeline(Pipeline):
 
             "fastp": {
                 "type": "object", "additionalProperties": False,
+                "title": "fastp",
                 "properties": {
                     "qualified_quality_phred": {
                         "type": "integer", "minimum": 0, "maximum": 50, "default": 15},
@@ -123,6 +125,7 @@ class OntLsdvPipeline(Pipeline):
 
             "bcftools": {
                 "type": "object", "additionalProperties": False,
+                "title": "bcftools",
                 "properties": {
                     "max_depth": {"type": "integer", "minimum": 1, "default": 1000},
                     "ploidy": {
@@ -134,6 +137,7 @@ class OntLsdvPipeline(Pipeline):
 
             "medaka": {
                 "type": "object", "additionalProperties": False,
+                "title": "Medaka",
                 "properties": {
                     "variant_model": {"type": ["string", "null"], "default": None},
                     "consensus_model": {
@@ -143,6 +147,7 @@ class OntLsdvPipeline(Pipeline):
 
             "clair3": {
                 "type": "object", "additionalProperties": False,
+                "title": "Clair3",
                 "properties": {
                     "model_path": {"type": "string", "default": "/opt/models/ont"},
                     "platform": {"type": "string", "enum": ["ont"], "default": "ont"},
@@ -151,6 +156,7 @@ class OntLsdvPipeline(Pipeline):
 
             "consensus": {
                 "type": "object", "additionalProperties": False,
+                "title": "Consensus",
                 "properties": {
                     "tool": {
                         "type": "string", "enum": ["bcftools", "medaka"], "default": "bcftools"},
@@ -159,6 +165,7 @@ class OntLsdvPipeline(Pipeline):
 
             "snpeff": {
                 "type": "object", "additionalProperties": False,
+                "title": "snpEff annotation",
                 "properties": {
                     "database": {"type": "string", "default": "LSDV"},
                     "config": {"type": "string", "default": "/snpEff/snpEff.config"},
