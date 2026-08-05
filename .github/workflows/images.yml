@@ -1,0 +1,44 @@
+name: images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'shared/**'
+      - 'app/pipelines/*/manifest.yaml'
+      - 'app/pipelines/*/docker/**'
+      - 'tools/images.py'
+  workflow_dispatch:
+
+jobs:
+  build-push-lock:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - run: pip install PyYAML==6.0.2
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - run: python tools/images.py build
+      - run: python tools/images.py push
+      - run: python tools/images.py lock
+
+      - name: Commit the lock file
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet images.lock.json; then
+            git add images.lock.json
+            git commit -m "chore(images): refresh digest lock"
+            git push
+          fi
