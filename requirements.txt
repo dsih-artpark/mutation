@@ -7,3 +7,18 @@ tenacity
 python-dotenv==1.2.2
 pandas==2.3.3
 plotly==6.7.0
+
+# Durable run records. Celery's result backend is a cache, not a system of
+# record -- a completed run has to survive a Redis flush.
+SQLAlchemy==2.0.36
+psycopg[binary]==3.2.3
+
+# Validates submitted params against each pipeline's declared schema, and lets
+# Dharini render its forms from the same schema.
+jsonschema==4.23.0
+
+# Manifest parsing. Deliberately also usable by tools/ with no app imports.
+PyYAML==6.0.2
+
+# Webhook delivery.
+httpx==0.28.1
