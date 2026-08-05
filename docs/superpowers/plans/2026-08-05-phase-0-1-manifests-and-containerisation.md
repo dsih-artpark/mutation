@@ -1060,7 +1060,13 @@ def test_every_pipeline_package_is_discovered_without_an_import_line():
     }
     registered = {pipeline.id.replace("-", "_") for pipeline in registry.all()}
 
-    assert packages == registered, f"packages {packages} != registered {registered}"
+    # Subset, not equality. `tests/test_api.py` registers two synthetic
+    # pipelines into the shared registry singleton at module scope, and pytest
+    # imports every test module during collection -- before any test body runs
+    # -- so `registered` legitimately carries entries with no directory.
+    # The direction that matters is preserved: a package on disk that fails to
+    # register still fails this assertion.
+    assert packages <= registered, f"packages {packages} not all registered: {registered}"
 ```
 
 - [ ] **Step 2: Run it and note that it already passes**
