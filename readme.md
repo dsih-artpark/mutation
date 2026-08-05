@@ -43,8 +43,8 @@ Dharini (NestJS)
 
 **Key components**
 
-- **`app/pipelines/`** — one module per pipeline, registered by id. The only
-  place that changes when a pipeline is added.
+- **`app/pipelines/`** — one package per pipeline, discovered at startup and
+  registered by id. The only place that changes when a pipeline is added.
 - **`app/runtime/runner.py`** — the *only* code in the repo that starts a
   process. Every safety property is enforced here, once, for all pipelines.
 - **`app/runtime/context.py`** — what a pipeline author programs against.
@@ -89,15 +89,21 @@ cp .env.example .env
 
 docker compose up -d --build
 
-# Pre-pull the ONT tool images so the first real run isn't a long download
-docker compose exec worker sh -c '
-  for i in $ONT_IMAGE_CORE $ONT_IMAGE_MEDAKA $ONT_IMAGE_CLAIR3 \
-           $ONT_IMAGE_LONGSHOT $ONT_IMAGE_BAMCLIPPER $ONT_IMAGE_SNPEFF; do
-    docker pull "$i"
-  done'
+# Pre-pull the tool images so the first real run isn't a long download.
+# Reads images.lock.json and pulls every image at its locked digest.
+docker compose exec worker python tools/images.py pull
 
 curl localhost:8000/health
 ```
+
+⚠ **`tools/images.py pull` needs `images.lock.json`, and this repository does
+not have one yet.** The lock file is produced by `make images-lock`, which can
+only resolve a digest for an image that has already been **built and pushed** to
+a registry — and the custom images have not been pushed (see [Known
+gaps](#known-gaps)). Until that happens the command exits with
+`images.lock.json is missing or malformed`, the resolver falls back to the
+mutable tags in the manifests, and each image is pulled on demand during the
+first run that needs it. That works; it is just slower and not reproducible.
 
 ---
 
@@ -333,17 +339,27 @@ Both pipelines need Docker running, and the tool images each manifest declares
 pulled locally:
 
 ```bash
-python tools/images.py pull
+make images-pull      # or: python tools/images.py pull
 ```
 
-(The `make` wrapper around `tools/images.py` arrives in a later task; call the
-script directly for now.)
+This needs `images.lock.json`, which does not exist yet — see the warning under
+[Quick start](#quick-start-production--single-host). Without it, each image is
+pulled on demand the first time a stage needs it, at whatever mutable tag its
+manifest declares.
+
+`make help` lists the rest: `images-build`, `images-push`, `images-lock`,
+`test`, `test-fast`, `check`.
 
 ### Tests
 
 ```bash
-pytest tests/ -q      # 82 tests, no Docker or bioinformatics tools required
+pytest tests/ -q      # 145 tests, no bioinformatics tools required
 ```
+
+Seven of them are marked `docker` and run a real container to prove the
+runner's safety properties; they skip when no daemon is available. `make
+test-fast` skips them explicitly, and CI sets `REQUIRE_DOCKER=1` so the skip
+becomes a failure instead.
 
 They use synthetic pipelines built from ordinary shell tools, so the whole
 control plane is covered without installing anything heavy. `test_runner.py` is
@@ -356,19 +372,31 @@ failure means a class of bug has come back.
 
 See **[docs/PIPELINE_AUTHORING.md](docs/PIPELINE_AUTHORING.md)**.
 
-Short version: write one module implementing `Pipeline`, add one import line to
-`app/pipelines/__init__.py`. Nothing else changes.
+Short version: **a pipeline is one new directory under `app/pipelines/`** — a
+package implementing `Pipeline`, plus a `manifest.yaml` declaring the container
+images it needs. No existing file changes: `app/pipelines/__init__.py` discovers
+every subpackage with `pkgutil` at startup, and each one registers itself.
 
 ---
 
 ## Known gaps
 
-1. **The `suhas0/*` tool images have no Dockerfile in this repository** and live
-   on a personal Docker Hub account. They cannot be rebuilt, audited or
-   patched. Rebuild them from source into a registry the organisation controls.
-2. **Image tags are mutable** (`:latest`, or a `:v4` that can be re-pushed), so
-   two runs a month apart may quietly use different tool versions. Pin by
-   digest.
+1. **The custom images have never been pushed.** Every image is now declared in
+   a `manifest.yaml` and every custom one has a Dockerfile in this repository
+   (`shared/docker/`, `app/pipelines/ont_lsdv/docker/`), built on micromamba +
+   bioconda — the `suhas0/*` personal-account images are gone. What remains is
+   that nothing has been published to `artpark/*`: the registry namespace is
+   unconfirmed and `docker push` has not been authorised. Until it is,
+   `make images-push && make images-lock` cannot run.
+2. **There is no `images.lock.json`, so nothing is digest-pinned yet.** The
+   machinery is in place — `make images-lock` resolves every declared image to a
+   digest, `app/runtime/images.py` prefers a locked digest over the manifest tag,
+   `REQUIRE_PINNED_IMAGES=true` makes an unpinned image a startup failure, and
+   `.github/workflows/images.yml` regenerates and commits the lock on every
+   change to a manifest or Dockerfile. All of it is blocked on gap 1. Until the
+   lock file exists, images resolve to their manifest tags: pinned to an exact
+   version string, but a tag can be re-pushed, so two runs months apart are not
+   provably identical.
 3. **The worker mounts the Docker socket**, which is root-equivalent access to
    the host. Acceptable only because no client input ever reaches a shell — do
    not add a code path that changes that.

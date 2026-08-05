@@ -3,10 +3,11 @@
 How to add a new analysis pipeline to the Dharini pipeline service.
 
 The goal of this contract is that **adding a pipeline is a backend-only
-change**. You write one module. You do not touch the API, the database, the
-worker, the queue, or the Dharini frontend — they discover your pipeline
-through the registry, and Dharini renders its parameter form from the JSON
-Schema you declare.
+change**. You add **one directory** under `app/pipelines/` and edit no existing
+file. You do not touch the API, the database, the worker, the queue, or the
+Dharini frontend — `app/pipelines/__init__.py` discovers your package at
+startup, it registers itself, and Dharini renders its parameter form from the
+JSON Schema you declare.
 
 ---
 
@@ -113,15 +114,30 @@ ctx.require(bam)          # ← without this, a soft failure propagates silently
 A `StageSpec` says what to run and what it may consume.
 
 ```python
+from app.runtime.images import images_for
 from app.runtime.spec import StageSpec
 
+img = images_for(__package__)        # binds to this package's manifest.yaml
+
 ALIGN = StageSpec(
-    image="my-registry/aligner:1.2.0",   # None = run on the worker host
+    image=img("aligner"),            # a logical key, never an image string
     cpus=4,
     memory_gb=6,
     timeout_s=7200,
 )
 ```
+
+`image` is **required**. There is no local execution path: a stage that ran on
+the worker host got neither the CPU cap nor the memory cap, so one mis-declared
+stage could claim the whole box, and `StageSpec(image=None)` no longer exists.
+
+`image` is also **never a literal string**. `img("aligner")` looks the key up in
+your `manifest.yaml` (§5 below) and resolves it through the lock file, so
+repinning an image is a manifest edit and touches no Python. A hardcoded
+`"my-registry/aligner:1.2.0"` still *works*, which is exactly why it is
+dangerous: it bypasses the manifest, the digest lock and `REQUIRE_PINNED_IMAGES`
+silently, and the contract test cannot catch it — that test iterates the refs
+that went through `img()`, and a hardcoded string was never there to be seen.
 
 Both `cpus` and `memory_gb` become real `docker run` limits. They're clamped to
 `MAX_STAGE_CPUS` / `MAX_STAGE_MEMORY_GB`, so a typo can't claim the whole box.
@@ -150,7 +166,96 @@ That query is also how you decide whether the server needs to grow.
 
 ---
 
-## 5. Running tools
+## 5. Declaring images: `manifest.yaml`
+
+**Every pipeline package needs a `manifest.yaml`.** It is not optional and not
+a later step: `images_for(__package__)` reads it to find your scope, and raises
+`ImageResolutionError` at import time if it is absent — which means the package
+fails to import, and `app/pipelines/__init__.py` refuses to start rather than
+letting a pipeline silently vanish from the registry.
+
+A pipeline is one directory, and the manifest is what makes that true. The
+images live next to the code that runs them, so nothing outside the directory
+has to know your pipeline exists:
+
+```text
+app/pipelines/my_pipeline/
+├── __init__.py        # from .pipeline import MyPipeline
+├── manifest.yaml      # ← what this pipeline needs from the outside world
+├── specs.py           # StageSpecs, images resolved via img()
+├── pipeline.py        # the Pipeline subclass
+└── docker/
+    └── tool/Dockerfile
+```
+
+```yaml
+schema_version: 1
+scope: my-pipeline          # MUST equal Pipeline.id — the contract test checks
+
+images:
+  # source: build — you keep the Dockerfile, CI builds and pushes it.
+  tool:
+    source: build
+    dockerfile: docker/tool/Dockerfile    # relative to this manifest
+    context: docker/tool
+    repository: artpark/dharini-my-tool
+    version: "1.0.0"                      # never "latest"; parsing rejects it
+    platform: linux/amd64
+
+  # source: registry — an upstream image you only pull.
+  aligner:
+    source: registry
+    repository: quay.io/biocontainers/minimap2
+    version: "2.28--he4a0461_0"
+
+assets:                     # optional: reference data fetched at deploy time
+  reference:
+    url: "https://…"
+    filename: my_reference.fasta
+    sha256: ""              # "" means not yet pinned; fill it in
+```
+
+### Keys, scopes and the `shared:` prefix
+
+`img("tool")` resolves inside your own scope. To use something declared in
+`shared/manifest.yaml` — the snpEff and Snippy images, the LSDV reference —
+prefix it:
+
+```python
+SNPEFF = StageSpec(image=img("shared:snpeff-lsdv"), cpus=2, memory_gb=4)
+```
+
+There is no implicit fallback between the two. A bare key that is not in your
+manifest is an error, not a silent lookup somewhere else, so where an image
+comes from is always visible at the call site.
+
+**Put an image in `shared/` when two pipelines must agree on it**, not merely
+when two pipelines happen to use it. One snpEff image means the same variant is
+annotated the same way whichever pipeline produced it; that is the reason, and
+it is stronger than saving a download.
+
+### How pinning actually happens
+
+You declare `repository` and `version`; you never write a digest. Then:
+
+1. `make images-build` builds every `source: build` image from your Dockerfile.
+2. `make images-push` publishes it.
+3. `make images-lock` resolves **every** image — built and upstream alike — to a
+   digest and writes `images.lock.json`.
+4. `app/runtime/images.py` prefers the locked digest over the manifest tag, so
+   the same declaration yields a pinned ref in production and a convenient tag
+   locally.
+5. `REQUIRE_PINNED_IMAGES=true` makes an unpinned ref a startup failure, and
+   `.github/workflows/images.yml` regenerates the lock on every manifest or
+   Dockerfile change.
+
+Your part is steps 0 and 1: declare the image and keep its Dockerfile in this
+repository. An image nobody can rebuild is a liability regardless of how well
+it is pinned.
+
+---
+
+## 6. Running tools
 
 ### The normal case: an argv list
 
@@ -198,7 +303,7 @@ sh(f'minimap2 {ref} {fastq} | samtools sort -o {bam}')
 
 ---
 
-## 6. Publishing results
+## 7. Publishing results
 
 `ctx.work_dir` is **deleted** when the run ends. Only what you publish survives.
 That's deliberate: a FASTQ run generates several GB of BAMs and intermediates,
@@ -232,7 +337,7 @@ for key, value in summarise(rows).items():
 
 ---
 
-## 7. Writing `params_schema`
+## 8. Writing `params_schema`
 
 This is the pipeline's public API. Dharini builds its form from it, so
 `title` and `description` are user-facing text, not comments.
@@ -277,17 +382,41 @@ Rules that matter:
 
 ---
 
-## 8. Worked example
+## 9. Worked example
 
-`app/pipelines/my_pipeline.py`:
+Four files in one new directory, and nothing outside it changes.
+
+`app/pipelines/my_pipeline/manifest.yaml`:
+
+```yaml
+schema_version: 1
+scope: my-pipeline
+
+images:
+  tool:
+    source: registry
+    repository: quay.io/biocontainers/my-tool
+    version: "1.0.0--hdfd78af_0"
+```
+
+`app/pipelines/my_pipeline/specs.py`:
 
 ```python
-from ..runtime.context import RunContext, RunResult
-from ..runtime.spec import StageSpec
-from .base import Pipeline
-from .registry import registry
+from ...runtime.images import images_for
+from ...runtime.spec import StageSpec
 
-TOOL = StageSpec(image="my-registry/tool:1.0.0", cpus=2, memory_gb=4)
+img = images_for(__package__)          # reads the manifest.yaml beside this file
+
+TOOL = StageSpec(image=img("tool"), cpus=2, memory_gb=4)
+```
+
+`app/pipelines/my_pipeline/pipeline.py`:
+
+```python
+from ...runtime.context import RunContext, RunResult
+from ..base import Pipeline
+from ..registry import registry
+from . import specs
 
 
 class MyPipeline(Pipeline):
@@ -308,6 +437,7 @@ class MyPipeline(Pipeline):
             "threshold": {
                 "type": "number", "minimum": 0, "maximum": 1, "default": 0.5,
                 "title": "Detection threshold",
+                "description": "Calls below this score are discarded.",
             },
         },
     }
@@ -318,7 +448,7 @@ class MyPipeline(Pipeline):
 
         with ctx.stage("analyse"):
             output = ctx.work_dir / "results.tsv"
-            ctx.run(TOOL, [
+            ctx.run(specs.TOOL, [
                 "my-tool",
                 "--input", str(ctx.input_path),
                 "--threshold", str(ctx.param("threshold", 0.5)),
@@ -334,11 +464,20 @@ class MyPipeline(Pipeline):
 registry.register(MyPipeline())
 ```
 
-Then add one line to `app/pipelines/__init__.py`:
+`app/pipelines/my_pipeline/__init__.py`:
 
 ```python
-from . import my_pipeline  # noqa: F401
+from .pipeline import MyPipeline
+
+__all__ = ["MyPipeline"]
 ```
+
+**No existing file changes.** `app/pipelines/__init__.py` walks its own package
+directory with `pkgutil` at startup and imports every subpackage, so importing
+`app.pipelines.my_pipeline` runs `registry.register(...)` above. An import
+failure is re-raised naming your package rather than swallowed — a pipeline that
+quietly disappears from the registry is far harder to debug than one that fails
+loudly at startup.
 
 **That is the entire integration.** `GET /v1/pipelines` now lists it,
 `POST /v1/runs` accepts it, progress and webhooks work, and Dharini can render
@@ -346,7 +485,7 @@ its form.
 
 ---
 
-## 9. Testing before you deploy
+## 10. Testing before you deploy
 
 ```bash
 # 1. Does it register and is the schema valid?
@@ -358,16 +497,20 @@ from app.pipelines import registry
 print(registry.validate_params('my-pipeline', {}))
 "
 
-# 3. Pre-pull the tool images so the first real run isn't a 10-minute download
-docker pull my-registry/tool:1.0.0
+# 3. Does the contract kit pass? It covers your pipeline the moment it is
+#    registered -- schema shape, stage names, manifest, image declarations.
+pytest tests/test_all_pipelines.py -q
 
-# 4. Run it end to end
+# 4. Pre-pull the tool images so the first real run isn't a 10-minute download
+make images-pull      # needs images.lock.json; see readme "Known gaps"
+
+# 5. Run it end to end
 curl -X POST http://localhost:8000/v1/runs \
   -F pipeline_id=my-pipeline \
   -F file=@test.fastq.gz \
   -F 'params={"threshold": 0.7}'
 
-# 5. Watch it
+# 6. Watch it
 curl http://localhost:8000/v1/runs/<run_id> | jq '.progress, .stages'
 ```
 
@@ -377,7 +520,7 @@ If a stage fails, its full log is at
 
 ---
 
-## 10. Checklist
+## 11. Checklist
 
 Before opening a PR:
 
@@ -389,15 +532,22 @@ Before opening a PR:
 - [ ] Every `ctx.run()` is followed by `ctx.require()` on its output
 - [ ] No `subprocess`, no `docker`, no relative paths, no `sys.exit`
 - [ ] Any `sh()` script is a literal constant with data passed via `env`
-- [ ] Every tool image is pinned by digest, not `:latest`
+- [ ] Every `StageSpec` names its image with `img("key")`, never a literal
+      string — a literal bypasses the manifest and the digest lock silently,
+      and no test can see it
+- [ ] `manifest.yaml` exists, its `scope` equals `Pipeline.id`, and every image
+      declares an exact `version` (never `latest`). Pinning by digest is then
+      the lock file's job, not yours: `make images-lock` resolves every
+      declared image and `REQUIRE_PINNED_IMAGES=true` enforces it in production
+- [ ] Every custom image has a Dockerfile in this repository
 - [ ] Resource estimates are declared on every `StageSpec`
 - [ ] Files worth keeping are published with `ctx.artifact()`; everything else
       is left in `work_dir` to be deleted
-- [ ] Registered in `app/pipelines/__init__.py`
+- [ ] `pytest tests/test_all_pipelines.py -q` passes — no new test file needed
 
 ---
 
-## 11. Mistakes we've already made
+## 12. Mistakes we've already made
 
 Real defects found in the first ONT delivery. Worth reading once — they're the
 reason several rules above exist.
@@ -418,7 +568,7 @@ reason several rules above exist.
 
 ---
 
-## 12. Getting the tool images right
+## 13. Getting the tool images right
 
 Tool isolation by image is correct and is why this design works: Medaka, Clair3
 and Longshot have irreconcilable Python, PyTorch/TensorFlow and htslib
