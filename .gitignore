@@ -2,3 +2,28 @@
 snpeff_build/
 __pycache__/
 runs/*
+
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+*.db
+*.sqlite3
+
+# Reference indexes are regenerated per run.
+/data/*.mmi
+
+# Large inputs and generated outputs from the ONT reference copy.
+ONTpipeline/input/
+ONTpipeline/output/
+ONTpipeline/logs/
+
+# The bioinformatics team's original delivery: 17 MB including a test FASTQ.
+# The adapted implementation lives in app/pipelines/ont_lsdv/.
+AWS_PIPELINE-FINAL.zip
+snpEff_summary.html
+
+.DS_Store
+.idea/
+.vscode/

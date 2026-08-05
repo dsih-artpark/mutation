@@ -1,129 +1,407 @@
+"""Celery tasks: run execution, webhook delivery, retention."""
+
+from __future__ import annotations
+
 import shutil
 import traceback
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from .config import (
+    REFS_ROOT,
+    RETENTION_HOURS,
+    RUNS_ROOT,
+    WEBHOOK_BACKOFF_S,
+    WEBHOOK_MAX_ATTEMPTS,
+)
+from .db import session_scope
+from .delivery import build_payload, post
+from .models import (
+    DeliveryStatus,
+    Run,
+    RunArtifact,
+    RunStage,
+    RunStatus,
+    StageStatus,
+    WebhookDelivery,
+    utcnow,
+)
+from .pipelines import registry
+from .runtime.context import RunContext, RunPaths
+from .runtime.spec import StageError
 from .worker import celery
-from .config import RUNS_DIR, REFERENCE, SNPEFF_DB
-from .utils import run_cmd
-from .visualization import generate_visualization
 
 
-@celery.task(bind=True)
-def process_fasta(self, file_path: str):
+# ==========================================================================
+# Stage recorder
+# ==========================================================================
+
+class DbRecorder:
+    """Writes stage lifecycle events straight through to Postgres.
+
+    Each event is its own short transaction so progress is visible to the
+    status endpoint while the run is still executing -- a run that has been
+    going for six minutes should be able to say which stage it is on.
+    """
+
+    def __init__(self, run_id: str):
+        self.run_id = run_id
+
+    def stage_started(self, name: str, ordinal: int) -> None:
+        with session_scope() as session:
+            session.add(RunStage(
+                run_id=self.run_id, name=name, ordinal=ordinal,
+                status=StageStatus.RUNNING, started_at=utcnow(),
+            ))
+
+    def stage_finished(self, name, duration_s, peak_memory_mb, image) -> None:
+        with session_scope() as session:
+            stage = self._current(session, name)
+            if stage:
+                stage.status = StageStatus.SUCCEEDED
+                stage.finished_at = utcnow()
+                stage.duration_s = duration_s
+                stage.peak_memory_mb = peak_memory_mb
+                stage.image = image
+
+    def stage_failed(self, name, message, exit_code) -> None:
+        with session_scope() as session:
+            stage = self._current(session, name)
+            if stage:
+                stage.status = StageStatus.FAILED
+                stage.finished_at = utcnow()
+                stage.exit_code = exit_code
+                stage.message = message[:8000]
+
+    def stage_skipped(self, name, reason) -> None:
+        with session_scope() as session:
+            session.add(RunStage(
+                run_id=self.run_id, name=name, ordinal=-1,
+                status=StageStatus.SKIPPED, message=reason[:8000],
+                started_at=utcnow(), finished_at=utcnow(),
+            ))
+
+    def log(self, message: str) -> None:
+        print(f"[{self.run_id[:8]}] {message}", flush=True)
+
+    def _current(self, session, name: str) -> RunStage | None:
+        return (
+            session.query(RunStage)
+            .filter(RunStage.run_id == self.run_id, RunStage.name == name)
+            .order_by(RunStage.id.desc())
+            .first()
+        )
+
+
+# ==========================================================================
+# Run execution
+# ==========================================================================
+
+@celery.task(name="app.tasks.execute_run", bind=True, acks_late=True)
+def execute_run(self, run_id: str) -> dict:
+    """Execute a queued run.
+
+    Deliberately does not re-raise. A pipeline failure is a normal, recordable
+    outcome that the consumer must be told about -- not a Celery-level error
+    that would retry eight minutes of compute or vanish into a dead-letter
+    queue. Only the run record decides success.
+    """
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            return {"status": "unknown_run", "run_id": run_id}
+        if run.status != RunStatus.QUEUED:
+            return {"status": "already_started", "run_id": run_id, "state": run.status.value}
+
+        run.status = RunStatus.RUNNING
+        run.started_at = utcnow()
+        pipeline_id = run.pipeline_id
+        params = dict(run.params or {})
+        input_filename = run.input_filename
+        stored_name = (run.params or {}).get("_input_name")
+        extra_inputs = (run.params or {}).get("_extra_inputs", {})
+
+    pipeline = registry.get(pipeline_id)
+    paths = RunPaths.for_run(RUNS_ROOT, run_id).create()
+
+    # Strip the reserved bookkeeping keys before the pipeline sees its params.
+    clean_params = {k: v for k, v in params.items() if not k.startswith("_")}
+
+    ctx = RunContext(
+        run_id=run_id,
+        params=clean_params,
+        paths=paths,
+        refs_dir=REFS_ROOT,
+        recorder=DbRecorder(run_id),
+        stages=list(pipeline.stages),
+        input_name=stored_name or pipeline.input_filename,
+        extra_inputs=extra_inputs,
+    )
+
+    failure: tuple[str | None, str] | None = None
     try:
-        run_id = self.request.id
-        run_dir = RUNS_DIR / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
+        result = pipeline.run(ctx)
+    except StageError as exc:
+        failure = (getattr(exc, "stage", None), str(exc))
+        result = ctx.result
+    except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
+        failure = (None, f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+        result = ctx.result
 
-        fasta_path = Path(file_path)
-        local_fasta = run_dir / fasta_path.name
-        shutil.copy(fasta_path, local_fasta)
+    _persist_result(run_id, pipeline, result, failure, input_filename)
+    _purge_work_dir(paths)
 
-        # ===== SNIPPY =====
-        snippy_out = run_dir / "snippy"
-        run_cmd([
-            "snippy",
-            "--force",
-            "--ref", str(REFERENCE),
-            "--ctgs", str(local_fasta),
-            "--outdir", str(snippy_out),
-            "--ram", "2",
-            "--cpus", "2",
-        ])
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        status = run.status.value if run else "UNKNOWN"
 
-        snps_vcf = snippy_out / "snps.vcf"
+    _enqueue_delivery(run_id)
+    return {"run_id": run_id, "status": status}
 
-        if not snps_vcf.exists():
-            raise Exception("Snippy failed: VCF not generated")
 
-        # ===== SNPEFF =====
-        annotated_vcf = run_dir / "annotated.vcf"
+def _persist_result(run_id, pipeline, result, failure, input_filename) -> None:
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            return
 
-        with open(annotated_vcf, "w") as out:
-            run_cmd([
-                "snpEff",
-                "-v",
-                SNPEFF_DB,
-                str(snps_vcf)
-            ], stdout=out)
+        run.pipeline_version = pipeline.version
+        run.finished_at = utcnow()
+        run.metrics = result.metrics or {}
 
-        # ===== VISUALIZATION =====
+        if failure:
+            run.status = RunStatus.FAILED
+            run.error_stage, run.error_message = failure[0], failure[1][:16000]
+        else:
+            run.status = RunStatus.SUCCEEDED
+
+        for artifact in result.artifacts:
+            if not artifact.path.exists():
+                continue
+            session.add(RunArtifact(
+                run_id=run_id,
+                kind=artifact.kind,
+                label=artifact.label,
+                filename=artifact.path.name,
+                size_bytes=artifact.size_bytes,
+                content_type=artifact.content_type,
+            ))
+
+        # Variants are large and belong in the payload, not in a JSON column;
+        # cache them next to the artifacts for redelivery.
+        if result.variants:
+            _write_variant_cache(run_id, result.variants)
+
+        run.input_filename = input_filename
+
+
+def _write_variant_cache(run_id: str, variants: list[dict]) -> None:
+    import json
+
+    path = RunPaths.for_run(RUNS_ROOT, run_id).root / "variants.json"
+    try:
+        path.write_text(json.dumps(variants, default=str))
+    except OSError as exc:
+        print(f"[{run_id[:8]}] could not cache variants: {exc}", flush=True)
+
+
+def _read_variant_cache(run_id: str) -> list[dict]:
+    import json
+
+    path = RunPaths.for_run(RUNS_ROOT, run_id).root / "variants.json"
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+
+
+def _purge_work_dir(paths: RunPaths) -> None:
+    """Scratch is deleted as soon as the run ends. Only files a pipeline
+    explicitly published survive, which is what keeps a 320 GB disk viable."""
+    try:
+        shutil.rmtree(paths.work, ignore_errors=True)
+    except OSError as exc:
+        print(f"could not remove work dir {paths.work}: {exc}", flush=True)
+
+
+# ==========================================================================
+# Webhook delivery
+# ==========================================================================
+
+def _enqueue_delivery(run_id: str) -> None:
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        if run is None or not run.callback_url:
+            return
+        delivery = WebhookDelivery(
+            run_id=run_id,
+            url=run.callback_url,
+            event="run.completed" if run.status == RunStatus.SUCCEEDED else "run.failed",
+            max_attempts=WEBHOOK_MAX_ATTEMPTS,
+            next_attempt_at=utcnow(),
+        )
+        session.add(delivery)
+        session.flush()
+        delivery_id = delivery.id
+
+    deliver_webhook.apply_async(args=[delivery_id])
+
+
+@celery.task(name="app.tasks.deliver_webhook", bind=True, acks_late=True)
+def deliver_webhook(self, delivery_id: str) -> dict:
+    """Attempt one delivery, rescheduling on failure with backoff.
+
+    A delivery that never succeeds leaves the run SUCCEEDED and the delivery
+    ABANDONED. The computation was valid; only the notification failed, and
+    /v1/runs/{id} plus the redeliver endpoint remain as recovery paths.
+    """
+    with session_scope() as session:
+        delivery = session.get(WebhookDelivery, delivery_id)
+        if delivery is None or delivery.status == DeliveryStatus.DELIVERED:
+            return {"delivery_id": delivery_id, "status": "skipped"}
+
+        run = session.get(Run, delivery.run_id)
+        if run is None:
+            delivery.status = DeliveryStatus.ABANDONED
+            delivery.last_error = "run no longer exists"
+            return {"delivery_id": delivery_id, "status": "abandoned"}
+
+        # Touch the relationships while the session is open.
+        _ = run.artifacts, run.stages
+        payload = build_payload(run, delivery, _read_variant_cache(run.id))
+        url, event, attempts, max_attempts = (
+            delivery.url, delivery.event, delivery.attempts, delivery.max_attempts,
+        )
+
+    status_code, error = post(url, payload, delivery_id, event)
+
+    with session_scope() as session:
+        delivery = session.get(WebhookDelivery, delivery_id)
+        if delivery is None:
+            return {"delivery_id": delivery_id, "status": "vanished"}
+
+        delivery.attempts = attempts + 1
+        delivery.last_status_code = status_code
+        delivery.last_error = error
+
+        if error is None:
+            delivery.status = DeliveryStatus.DELIVERED
+            delivery.delivered_at = utcnow()
+            delivery.next_attempt_at = None
+            return {"delivery_id": delivery_id, "status": "delivered", "code": status_code}
+
+        if delivery.attempts >= max_attempts:
+            delivery.status = DeliveryStatus.ABANDONED
+            delivery.next_attempt_at = None
+            print(
+                f"[webhook] abandoned {delivery_id} for run {delivery.run_id} "
+                f"after {delivery.attempts} attempts: {error}",
+                flush=True,
+            )
+            return {"delivery_id": delivery_id, "status": "abandoned", "error": error}
+
+        index = min(delivery.attempts - 1, len(WEBHOOK_BACKOFF_S) - 1)
+        countdown = WEBHOOK_BACKOFF_S[index]
+        delivery.status = DeliveryStatus.FAILED
+        delivery.next_attempt_at = utcnow() + timedelta(seconds=countdown)
+
+    deliver_webhook.apply_async(args=[delivery_id], countdown=countdown)
+    return {"delivery_id": delivery_id, "status": "retrying", "in_s": countdown}
+
+
+@celery.task(name="app.tasks.sweep_pending_deliveries")
+def sweep_pending_deliveries() -> dict:
+    """Safety net for deliveries whose retry task was lost.
+
+    Celery holds a scheduled retry in the broker; a Redis flush or a worker
+    killed mid-countdown loses it silently. This re-arms anything overdue, so a
+    lost message costs minutes rather than the delivery.
+    """
+    now = datetime.now(timezone.utc)
+    requeued = []
+
+    with session_scope() as session:
+        overdue = (
+            session.query(WebhookDelivery)
+            .filter(
+                WebhookDelivery.status.in_([DeliveryStatus.PENDING, DeliveryStatus.FAILED]),
+                WebhookDelivery.next_attempt_at.isnot(None),
+                WebhookDelivery.next_attempt_at <= now,
+            )
+            .limit(100)
+            .all()
+        )
+        requeued = [d.id for d in overdue]
+
+    for delivery_id in requeued:
+        deliver_webhook.apply_async(args=[delivery_id])
+
+    return {"requeued": len(requeued)}
+
+
+# ==========================================================================
+# Retention
+# ==========================================================================
+
+@celery.task(name="app.tasks.cleanup_expired_runs")
+def cleanup_expired_runs(hours: int | None = None) -> dict:
+    """Delete artifacts older than the retention window.
+
+    Run *records* are kept indefinitely -- they are small, and the history is
+    the point of a surveillance platform. Only the bulky files go.
+    """
+    hours = hours or RETENTION_HOURS
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    purged = 0
+    with session_scope() as session:
+        expired = (
+            session.query(Run)
+            .filter(
+                Run.created_at < cutoff,
+                Run.artifacts_purged.is_(False),
+                Run.status.in_([RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED]),
+            )
+            .limit(500)
+            .all()
+        )
+
+        for run in expired:
+            # Never purge a run whose result has not yet reached the consumer.
+            undelivered = [
+                d for d in run.deliveries
+                if d.status in (DeliveryStatus.PENDING, DeliveryStatus.FAILED)
+            ]
+            if undelivered:
+                continue
+
+            run_dir = RUNS_ROOT / run.id
+            if run_dir.exists():
+                shutil.rmtree(run_dir, ignore_errors=True)
+            run.artifacts_purged = True
+            purged += 1
+
+    orphans = _sweep_orphan_uploads(cutoff)
+    return {"purged_runs": purged, "removed_orphan_uploads": orphans}
+
+
+def _sweep_orphan_uploads(cutoff: datetime) -> int:
+    """Uploads that were staged but never became a run."""
+    upload_dir = RUNS_ROOT / "uploads"
+    if not upload_dir.exists():
+        return 0
+
+    removed = 0
+    threshold = cutoff.timestamp()
+    for path in upload_dir.iterdir():
         try:
-            generate_visualization(run_id)
-            viz_generated = True
-        except Exception as e:
-            print(f"Warning: Visualization generation failed: {e}")
-            viz_generated = False
-
-        # ===== CLEANUP =====
-        # We only want to keep the final results. 
-        # Move them out of the snippy folder to the run_dir, then delete the rest.
-        final_snps = run_dir / "snps.vcf"
-        shutil.move(str(snps_vcf), str(final_snps))
-        
-        # Remove the bulky snippy directory and the local fasta
-        shutil.rmtree(snippy_out)
-        if local_fasta.exists():
-            local_fasta.unlink()
-        
-        # Also cleanup the upload file to save space
-        if fasta_path.exists():
-            fasta_path.unlink()
-
-        return {
-            "status": "completed",
-            "run_id": run_id,
-            "snps_vcf": str(final_snps),
-            "annotated_vcf": str(annotated_vcf),
-            "visualization": f"/visualization/{run_id}" if viz_generated else None
-        }
-
-    except Exception as e:
-        error_msg = f"{str(e)}\n{traceback.format_exc()}"
-        print(f"❌ Task failed: {error_msg}")
-        return {"status": "failed", "error": str(e), "traceback": error_msg}
+            if path.is_file() and path.stat().st_mtime < threshold:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
-@celery.task
-def cleanup_old_runs(hours: int = 12):
-    """Delete run directories and orphaned upload files older than the specified hours."""
-    import time
-    now = time.time()
-    cutoff = now - (hours * 3600)
-    
-    print(f"Starting cleanup of runs and uploads older than {hours} hours...")
-    
-    deleted_runs = 0
-    deleted_uploads = 0
-    
-    if not RUNS_DIR.exists():
-        return {"status": "skipped", "reason": "RUNS_DIR does not exist"}
-
-    for item_path in RUNS_DIR.iterdir():
-        if item_path.is_dir() and item_path.name == "uploads":
-            # Clean up old upload files
-            for upload_file in item_path.iterdir():
-                if upload_file.is_file():
-                    try:
-                        if upload_file.stat().st_mtime < cutoff:
-                            print(f"Removing orphaned upload file: {upload_file}")
-                            upload_file.unlink()
-                            deleted_uploads += 1
-                    except Exception as e:
-                        print(f"Error deleting {upload_file}: {e}")
-        elif item_path.is_dir():
-            # Clean up old run directories
-            try:
-                # Use the modification time of the directory
-                mtime = item_path.stat().st_mtime
-                if mtime < cutoff:
-                    print(f"Removing old run directory: {item_path}")
-                    shutil.rmtree(item_path)
-                    deleted_runs += 1
-            except Exception as e:
-                print(f"Error deleting {item_path}: {e}")
-
-    return {
-        "status": "completed", 
-        "deleted_runs_count": deleted_runs,
-        "deleted_uploads_count": deleted_uploads
-    }
+def _run_dir(run_id: str) -> Path:
+    return RUNS_ROOT / run_id

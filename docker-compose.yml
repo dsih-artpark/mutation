@@ -1,37 +1,90 @@
+# Path parity is the load-bearing detail here.
+#
+# The worker spawns per-tool containers through the host Docker daemon, and the
+# daemon resolves every bind-mount source against the HOST filesystem -- never
+# against the container that asked. Mounting the runs directory at the same
+# absolute path on both sides means a path the worker computes is also valid on
+# the host, so the tool containers see the real data.
+#
+# Get this wrong and the failure is silent rather than loud: Docker creates an
+# empty directory at the missing host path, mounts that, and the tool reports a
+# confusing "file not found" against data that plainly exists.
+#
+# Set RUNS_ROOT and REFS_ROOT to absolute host paths in .env before starting.
+
+x-app: &app
+  build: .
+  platform: linux/amd64
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    RUNS_ROOT: ${RUNS_ROOT:-/srv/dharini/runs}
+    REFS_ROOT: ${REFS_ROOT:-/srv/dharini/references}
+    REDIS_URL: redis://redis:6379/0
+    DATABASE_URL: postgresql+psycopg://dharini:${POSTGRES_PASSWORD:-dharini}@postgres:5432/dharini
+  volumes:
+    - ${RUNS_ROOT:-/srv/dharini/runs}:${RUNS_ROOT:-/srv/dharini/runs}
+    - ${REFS_ROOT:-/srv/dharini/references}:${REFS_ROOT:-/srv/dharini/references}
+  depends_on:
+    redis:
+      condition: service_started
+    postgres:
+      condition: service_healthy
+
 services:
   api:
-    platform: linux/amd64
-    build: .
-    container_name: lsdv_api
+    <<: *app
+    container_name: dharini_api
     ports:
       - "8000:8000"
-    depends_on:
-      - redis
-    volumes:
-      - ./runs:/app/runs
 
   worker:
-    platform: linux/amd64
-    build: .
-    container_name: lsdv_worker
+    <<: *app
+    container_name: dharini_worker
     command: celery -A app.worker.celery worker --loglevel=info
-    depends_on:
-      - redis
     volumes:
-      - ./runs:/app/runs
+      - ${RUNS_ROOT:-/srv/dharini/runs}:${RUNS_ROOT:-/srv/dharini/runs}
+      - ${REFS_ROOT:-/srv/dharini/references}:${REFS_ROOT:-/srv/dharini/references}
+      # Lets the worker start sibling tool containers.
+      #
+      # ⚠ This is root-equivalent access to the host. It is acceptable here
+      #   only because the API in front of it never passes client input to a
+      #   shell (see runtime/runner.py). Do not add a code path that does.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # GID of the host's docker group, so the socket is usable without running
+    # as root. Find it with: getent group docker | cut -d: -f3
+    group_add:
+      - ${DOCKER_GID:-999}
 
   beat:
-    platform: linux/amd64
-    build: .
-    container_name: lsdv_beat
+    <<: *app
+    container_name: dharini_beat
     command: celery -A app.worker.celery beat --loglevel=info
-    depends_on:
-      - redis
-    volumes:
-      - ./runs:/app/runs
 
   redis:
     image: redis:7
-    container_name: lsdv_redis
-    ports:
-      - "6379:6379"
+    container_name: dharini_redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --appendonly no
+    volumes:
+      - redis_data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: dharini_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dharini
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dharini}
+      POSTGRES_DB: dharini
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dharini"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  redis_data:
+  postgres_data:
