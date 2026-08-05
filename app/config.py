@@ -42,7 +42,30 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # Reference data (snippy-fasta pipeline)
 # --------------------------------------------------------------------------
 
-REFERENCE = Path(os.getenv("REFERENCE_PATH", str(DATA_DIR / "lsdv_reference_sequence.fasta")))
+# Named by filename and resolved inside REFS_ROOT, because REFS_ROOT is the
+# only references directory mounted into tool containers. A reference anywhere
+# else exists for the application and not for the tool that has to open it.
+#
+# This was a live bug: REFERENCE_PATH defaulted to /app/data/..., which is a
+# path inside the application image. snippy therefore ran with
+# `--ref /app/data/lsdv_reference_sequence.fasta` and reported "Invalid
+# --reference filename", because the stage container mounts REFS_ROOT at its
+# host path and has no /app at all. It only ever worked while the since-deleted
+# local execution path ran tools in-process.
+REFERENCE_FILENAME = os.getenv("REFERENCE_FILENAME", "lsdv_reference_sequence.fasta")
+REFERENCE = (REFS_ROOT / REFERENCE_FILENAME).resolve()
+
+_legacy_reference_path = os.getenv("REFERENCE_PATH")
+if _legacy_reference_path:
+    _legacy = Path(_legacy_reference_path).resolve()
+    if not _legacy.is_relative_to(REFS_ROOT):
+        raise RuntimeError(
+            f"REFERENCE_PATH={_legacy_reference_path!r} is outside REFS_ROOT ({REFS_ROOT}), "
+            "so no tool container can read it. Move the file into REFS_ROOT and set "
+            "REFERENCE_FILENAME to its name instead."
+        )
+    REFERENCE = _legacy
+
 SNPEFF_DB = os.getenv("SNPEFF_DB", "LSDV")
 
 # --------------------------------------------------------------------------
