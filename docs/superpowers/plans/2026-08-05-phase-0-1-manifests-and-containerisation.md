@@ -1171,7 +1171,7 @@ from ...runtime.spec import StageSpec
 
 img = images_for(__package__)
 
-CORE = img("core")
+CORE_IMAGE = img("core")
 
 _HOUR = 3600
 
@@ -1232,6 +1232,29 @@ Expected: `artpark/dharini-ont-core:1.0.0`, then `artpark/dharini-snpeff:5.4-lsd
 then a sorted list of the **six** distinct refs this pipeline resolves — `core`
 (shared by five stages), `bamclipper`, `longshot`, `medaka`, `clair3`, and
 `shared:snpeff-lsdv`.
+
+Then confirm every attribute the stage modules dereference still exists.
+Importing `specs` alone does **not** prove this: Python resolves `specs.X` only
+when that line runs, so a missing name hides until a stage executes. `primer.py`
+uses `specs.CORE_IMAGE`, and no test in the suite reaches that branch.
+
+```bash
+python - <<'PY'
+import re, pathlib
+from app.pipelines.ont_lsdv import specs
+
+referenced = set()
+for path in pathlib.Path("app/pipelines/ont_lsdv").glob("*.py"):
+    referenced |= set(re.findall(r"specs\.([A-Z][A-Z0-9_]*)", path.read_text()))
+
+missing = sorted(name for name in referenced if not hasattr(specs, name))
+print("referenced:", sorted(referenced))
+print("missing:", missing)
+assert not missing, f"stage modules reference undefined specs names: {missing}"
+PY
+```
+
+Expected: `missing: []`.
 
 Run: `pytest tests/ -q`
 Expected: PASS
