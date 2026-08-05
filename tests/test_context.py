@@ -85,6 +85,31 @@ def test_each_run_gets_isolated_directories(tmp_path):
     assert (a.work / "x.bam").read_text() == "a"
 
 
+@pytest.mark.parametrize(
+    "run_id",
+    ["..", "../escape", "../../etc", "a/../..", "", ".", "/etc"],
+    ids=["parent", "parent-child", "two-levels", "normalises-out", "empty", "dot", "absolute"],
+)
+def test_a_run_id_that_escapes_the_runs_root_is_refused(tmp_path, run_id):
+    """`GET /download/..%2Fsnps.vcf` served a file from outside RUNS_ROOT.
+
+    Validated here rather than at each of the seven call sites, so an eighth
+    caller cannot reintroduce it.
+    """
+    with pytest.raises(ValueError, match="invalid run id"):
+        RunPaths.for_run(tmp_path / "runs", run_id)
+
+
+def test_a_normal_run_id_still_resolves(tmp_path):
+    runs_root = tmp_path / "runs"
+    run_id = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+
+    paths = RunPaths.for_run(runs_root, run_id)
+
+    assert paths.root == (runs_root / run_id).resolve()
+    assert paths.output == paths.root / "output"
+
+
 def test_nested_param_lookup(ctx):
     assert ctx.param("variant.tool") == "clair3"
     assert ctx.param("threads") == 6

@@ -35,6 +35,20 @@ _STATUS_MAP = {
 _LEGACY_DOWNLOADS = {"snps.vcf", "annotated.vcf", "visualization.html"}
 
 
+def _run_paths(run_id: str) -> RunPaths:
+    """Resolve a run directory from a path parameter.
+
+    These two endpoints take `run_id` straight off the URL without looking the
+    run up first, so `RunPaths.for_run` is the only thing standing between a
+    crafted id and a file outside RUNS_ROOT. It signals that with ValueError;
+    unhandled, FastAPI would turn a rejected attack into a 500.
+    """
+    try:
+        return RunPaths.for_run(RUNS_ROOT, run_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid run id") from None
+
+
 @router.post("/upload", summary="Deprecated — use POST /v1/runs")
 async def upload_file(
     file: UploadFile = File(..., description="Select a FASTA file"),
@@ -104,7 +118,7 @@ def download_file(run_id: str, file_name: str):
     if file_name not in _LEGACY_DOWNLOADS:
         raise HTTPException(400, "Invalid file name")
 
-    paths = RunPaths.for_run(RUNS_ROOT, run_id)
+    paths = _run_paths(run_id)
     for candidate in (paths.output / file_name, paths.root / file_name):
         if candidate.exists():
             return FileResponse(candidate, filename=f"{run_id}_{file_name}")
@@ -114,7 +128,7 @@ def download_file(run_id: str, file_name: str):
 
 @router.get("/visualization/{run_id}", response_class=HTMLResponse)
 def view_visualization(run_id: str):
-    paths = RunPaths.for_run(RUNS_ROOT, run_id)
+    paths = _run_paths(run_id)
 
     for candidate in (paths.output / "visualization.html", paths.root / "visualization.html"):
         if candidate.exists():

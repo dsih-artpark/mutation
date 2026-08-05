@@ -33,7 +33,19 @@ class RunPaths:
 
     @classmethod
     def for_run(cls, runs_root: Path, run_id: str) -> "RunPaths":
+        """Build the layout for one run.
+
+        `run_id` reaches this method straight off a URL path on the legacy
+        endpoints, so it is validated here rather than at each of the seven
+        call sites -- one check that cannot be forgotten by the eighth caller.
+        `GET /download/..%2Fsnps.vcf` otherwise served a file from outside
+        RUNS_ROOT.
+        """
+        runs_root = Path(runs_root).resolve()
         root = (runs_root / run_id).resolve()
+        if not root.is_relative_to(runs_root) or root == runs_root:
+            raise ValueError(f"invalid run id: {run_id!r}")
+
         return cls(
             root=root,
             input=root / "input",

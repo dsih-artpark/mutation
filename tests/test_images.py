@@ -117,3 +117,53 @@ def test_load_lock_returns_empty_dict_when_images_value_is_not_an_object(tmp_pat
     monkeypatch.setattr("app.runtime.images.LOCK_PATH", lock_path)
 
     assert _load_lock() == {}
+
+
+# -- an unusable lock file must be loud -------------------------------------
+#
+# Falling back to a mutable tag is correct when there is no lock file and wrong
+# to do silently when there is one: production believes it is digest-pinned.
+
+def test_an_absent_lock_file_is_silent(tmp_path, monkeypatch, capsys):
+    """The normal local-development state. Warning here would train people to
+    ignore the warning that matters."""
+    monkeypatch.setattr("app.runtime.images.LOCK_PATH", tmp_path / "images.lock.json")
+
+    assert _load_lock() == {}
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        ("{ not json", "not valid JSON"),
+        (json.dumps([1, 2, 3]), "top-level list"),
+        (json.dumps({"schema_version": 1}), "no 'images' object"),
+        (json.dumps({"images": "oops"}), "'images' value of type str"),
+    ],
+    ids=["malformed-json", "top-level-list", "images-missing", "images-not-an-object"],
+)
+def test_a_corrupt_lock_file_warns_on_stderr(tmp_path, monkeypatch, capsys, content, expected):
+    lock_path = tmp_path / "images.lock.json"
+    lock_path.write_text(content)
+    monkeypatch.setattr("app.runtime.images.LOCK_PATH", lock_path)
+
+    assert _load_lock() == {}
+
+    stderr = capsys.readouterr().err
+    assert expected in stderr
+    assert "NOT" in stderr and "digest-pinned" in stderr, (
+        "the warning must say what the consequence is, not just that a file is bad"
+    )
+    assert str(lock_path) in stderr
+
+
+def test_an_unreadable_lock_file_warns_rather_than_raising(tmp_path, monkeypatch, capsys):
+    """A directory where the lock file should be: read_text raises OSError, not
+    FileNotFoundError, so it must take the warn-and-degrade path."""
+    lock_path = tmp_path / "images.lock.json"
+    lock_path.mkdir()
+    monkeypatch.setattr("app.runtime.images.LOCK_PATH", lock_path)
+
+    assert _load_lock() == {}
+    assert "could not be read" in capsys.readouterr().err

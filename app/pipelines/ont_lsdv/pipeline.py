@@ -54,6 +54,8 @@ class OntLsdvPipeline(Pipeline):
             "qc": {
                 "type": "object", "additionalProperties": False,
                 "title": "Quality control",
+                "description": "How the raw reads are summarised before alignment. "
+                               "The report is published as a run artifact either way.",
                 "properties": {
                     "tool": {
                         "type": "string", "enum": ["nanoplot", "fastp"], "default": "nanoplot",
@@ -65,6 +67,8 @@ class OntLsdvPipeline(Pipeline):
             "filter": {
                 "type": "object", "additionalProperties": False,
                 "title": "Read filtering",
+                "description": "Whether filtering thresholds are derived from the QC "
+                               "statistics or taken from the NanoFilt settings below.",
                 "properties": {
                     "mode": {
                         "type": "string", "enum": ["recommended", "manual"],
@@ -78,6 +82,8 @@ class OntLsdvPipeline(Pipeline):
             "nanofilt": {
                 "type": "object", "additionalProperties": False,
                 "title": "NanoFilt",
+                "description": "Manual length and quality thresholds. Only used when "
+                               "filter mode is 'manual' and NanoFilt is enabled.",
                 "properties": {
                     "enabled": {"type": "boolean", "default": False},
                     "min_quality": {"type": "integer", "minimum": 0, "maximum": 50, "default": 10},
@@ -90,6 +96,8 @@ class OntLsdvPipeline(Pipeline):
             "fastp": {
                 "type": "object", "additionalProperties": False,
                 "title": "fastp",
+                "description": "Thresholds used when fastp is the selected QC tool. "
+                               "Ignored under NanoPlot.",
                 "properties": {
                     "qualified_quality_phred": {
                         "type": "integer", "minimum": 0, "maximum": 50, "default": 15},
@@ -100,6 +108,8 @@ class OntLsdvPipeline(Pipeline):
             "primer": {
                 "type": "object", "additionalProperties": False,
                 "title": "Primer trimming",
+                "description": "For amplicon runs. Needs a primer BEDPE uploaded "
+                               "alongside the reads; the stage is skipped without one.",
                 "properties": {
                     "enabled": {
                         "type": "boolean", "default": False,
@@ -112,6 +122,8 @@ class OntLsdvPipeline(Pipeline):
             "variant": {
                 "type": "object", "additionalProperties": False,
                 "title": "Variant calling",
+                "description": "Which caller produces the VCF. This is the main "
+                               "accuracy-versus-runtime decision on the run.",
                 "properties": {
                     "tool": {
                         "type": "string",
@@ -126,6 +138,8 @@ class OntLsdvPipeline(Pipeline):
             "bcftools": {
                 "type": "object", "additionalProperties": False,
                 "title": "bcftools",
+                "description": "Settings for the bcftools caller. Ignored when another "
+                               "variant caller is selected.",
                 "properties": {
                     "max_depth": {"type": "integer", "minimum": 1, "default": 1000},
                     "ploidy": {
@@ -138,6 +152,8 @@ class OntLsdvPipeline(Pipeline):
             "medaka": {
                 "type": "object", "additionalProperties": False,
                 "title": "Medaka",
+                "description": "Basecaller-specific Medaka models. The wrong model for "
+                               "the flow cell and chemistry degrades calls silently.",
                 "properties": {
                     "variant_model": {"type": ["string", "null"], "default": None},
                     "consensus_model": {
@@ -148,6 +164,8 @@ class OntLsdvPipeline(Pipeline):
             "clair3": {
                 "type": "object", "additionalProperties": False,
                 "title": "Clair3",
+                "description": "Clair3 model location and sequencing platform, as they "
+                               "exist inside the Clair3 image.",
                 "properties": {
                     "model_path": {"type": "string", "default": "/opt/models/ont"},
                     "platform": {"type": "string", "enum": ["ont"], "default": "ont"},
@@ -157,6 +175,8 @@ class OntLsdvPipeline(Pipeline):
             "consensus": {
                 "type": "object", "additionalProperties": False,
                 "title": "Consensus",
+                "description": "How the consensus genome is built from the alignment "
+                               "and the called variants.",
                 "properties": {
                     "tool": {
                         "type": "string", "enum": ["bcftools", "medaka"], "default": "bcftools"},
@@ -166,6 +186,8 @@ class OntLsdvPipeline(Pipeline):
             "snpeff": {
                 "type": "object", "additionalProperties": False,
                 "title": "snpEff annotation",
+                "description": "Which snpEff database annotates the variants. It must "
+                               "derive from the same accession as the reference genome.",
                 "properties": {
                     "database": {"type": "string", "default": "LSDV"},
                     "config": {"type": "string", "default": "/snpEff/snpEff.config"},

@@ -37,8 +37,14 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet images.lock.json; then
-            git add images.lock.json
+          # Stage first, then compare the index against HEAD. `git diff` alone
+          # ignores untracked files, so on the very first run -- the one that
+          # creates images.lock.json -- it reports no change, the lock file is
+          # silently discarded, and the job goes green having pinned nothing.
+          git add -A images.lock.json
+          if git diff --cached --quiet -- images.lock.json; then
+            echo "images.lock.json is unchanged; nothing to commit."
+          else
             git commit -m "chore(images): refresh digest lock"
             git push
           fi

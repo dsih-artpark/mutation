@@ -273,6 +273,29 @@ def test_legacy_status_of_unknown_job_is_404(client):
     assert client.get("/status/does-not-exist").status_code == 404
 
 
+def test_legacy_download_cannot_traverse_out_of_the_runs_root(client):
+    """`GET /download/..%2Fsnps.vcf` used to return a file from RUNS_ROOT's
+    parent. The rejection must be a 4xx, not a 500 from an unhandled ValueError.
+    """
+    from app.config import RUNS_ROOT
+
+    planted = RUNS_ROOT.parent / "snps.vcf"
+    planted.write_text("outside the runs root\n")
+    try:
+        response = client.get("/download/..%2Fsnps.vcf")
+        assert response.status_code == 400, response.text
+        assert "outside the runs root" not in response.text
+    finally:
+        planted.unlink(missing_ok=True)
+
+
+def test_legacy_visualization_cannot_traverse_out_of_the_runs_root(client):
+    # Percent-encoded so the HTTP client does not normalise `..` away before
+    # the request is sent; the ASGI layer decodes it back into the path param.
+    response = client.get("/visualization/%2e%2e")
+    assert response.status_code == 400, response.text
+
+
 # ------------------------------------------------------------------ meta
 
 def test_health_reports_disk(client):

@@ -43,6 +43,13 @@ os.environ.setdefault("PUBLIC_BASE_URL", "http://testserver")
 os.environ.setdefault("WEBHOOK_SECRET", "test-secret")
 os.environ.setdefault("STATS_SAMPLE_INTERVAL_S", "0")
 
+# The shared LSDV reference and GFF3 ship with `sha256: ""` because the tool
+# that computes and writes those digests is a later phase (spec §5.1). Without
+# this the asset contract fails the whole suite over work nobody has been asked
+# to do yet. Unset it -- `ALLOW_UNPINNED_ASSETS= pytest tests/` -- to see which
+# assets are still unpinned; a release build should leave it unset.
+os.environ.setdefault("ALLOW_UNPINNED_ASSETS", "1")
+
 os.makedirs(os.environ["RUNS_ROOT"], exist_ok=True)
 os.makedirs(os.environ["REFS_ROOT"], exist_ok=True)
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -30,15 +31,52 @@ def _env_var(scope: str, key: str) -> str:
     return f"DHARINI_IMAGE__{normalise(scope)}__{normalise(key)}"
 
 
+def _warn_lock_unusable(reason: str) -> None:
+    """A lock file that exists but cannot be used must never be silent.
+
+    Falling back to the manifest's mutable tag is the right behaviour for local
+    development, where there is no lock file at all. It is the wrong behaviour
+    to do *quietly* on a host that shipped one: the operator believes every
+    stage is digest-pinned, and a truncated or hand-edited file downgrades the
+    whole deployment to floating tags with nothing in the logs to say so.
+    """
+    print(
+        f"WARNING: {LOCK_PATH} exists but {reason}. Image references will fall "
+        f"back to the mutable tags in the manifests, so this deployment is NOT "
+        f"digest-pinned. Regenerate it with 'make images-lock', or set "
+        f"REQUIRE_PINNED_IMAGES=true to make this a hard failure.",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def _load_lock() -> dict[str, dict]:
     try:
-        data = json.loads(LOCK_PATH.read_text())
-    except (OSError, ValueError):
+        text = LOCK_PATH.read_text()
+    except FileNotFoundError:
+        # No lock file is the normal local-development state, not a fault.
         return {}
+    except OSError as exc:
+        _warn_lock_unusable(f"could not be read: {exc}")
+        return {}
+
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        _warn_lock_unusable(f"is not valid JSON: {exc}")
+        return {}
+
     if not isinstance(data, dict):
+        _warn_lock_unusable(f"has a top-level {type(data).__name__}, not an object")
         return {}
+
     images = data.get("images")
     if not isinstance(images, dict):
+        _warn_lock_unusable(
+            "has no 'images' object at the top level"
+            if images is None
+            else f"has an 'images' value of type {type(images).__name__}, not an object"
+        )
         return {}
     return images
 
