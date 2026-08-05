@@ -485,38 +485,83 @@ its form.
 
 ---
 
-## 10. Testing before you deploy
+## 10. Testing locally, before you push
+
+**Docker is the only thing you need installed.** No Python, no pytest, no pip,
+no conda. Every command below runs in a container; if one of them asks you to
+install something on your machine, that is a bug in the command, not something
+for you to work around.
+
+### The loop
 
 ```bash
-# 1. Does it register and is the schema valid?
-python -c "from app.pipelines import registry; print([p.id for p in registry.all()])"
-
-# 2. Do defaults and validation behave?
-python -c "
-from app.pipelines import registry
-print(registry.validate_params('my-pipeline', {}))
-"
-
-# 3. Does the contract kit pass? It covers your pipeline the moment it is
-#    registered -- schema shape, stage names, manifest, image declarations.
-pytest tests/test_all_pipelines.py -q
-
-# 4. Pre-pull the tool images so the first real run isn't a 10-minute download
-make images-pull      # needs images.lock.json; see readme "Known gaps"
-
-# 5. Run it end to end
-curl -X POST http://localhost:8000/v1/runs \
-  -F pipeline_id=my-pipeline \
-  -F file=@test.fastq.gz \
-  -F 'params={"threshold": 0.7}'
-
-# 6. Watch it
-curl http://localhost:8000/v1/runs/<run_id> | jq '.progress, .stages'
+make images-list            # what images already exist -- reuse before you declare
+make check                  # contract kit: schema, stages, manifest, images   (~1s)
+make test-fast              # everything that doesn't need Docker              (~4s)
+make images-build SCOPE=my-pipeline    # build your custom images
+make fixtures               # generate deterministic inputs
+make smoke PIPELINE=my-pipeline        # a real end-to-end run
+make test                   # full suite including container-backed tests
 ```
 
-If a stage fails, its full log is at
-`$RUNS_ROOT/<run_id>/logs/NN_<stage>.log`, and the tail is in
-`error_message` on the run record.
+`make check` and `make test-fast` are fast enough to run on every save. The
+rest are for when you have something to look at.
+
+### The end-to-end run is the one that matters
+
+`make smoke` calls `tools/run_local.py`, which builds the **same** `RunContext`
+the Celery worker builds, applies the **same** schema validation and defaults
+the API applies, and executes the **same** stages in the **same** tool
+containers. It skips only Postgres, Redis, the queue and the HTTP layer — the
+parts you are not debugging.
+
+That equivalence is the point. A green run here means your pipeline works; it
+does not mean "it works in the test harness".
+
+```bash
+python tools/run_local.py my-pipeline fixtures/reads.fastq.gz \
+    --param variant.tool=bcftools \
+    --param primer.enabled=true \
+    --extra primer_bed=fixtures/scheme.bed \
+    --keep                      # retain work_dir; the worker purges it
+```
+
+It prints each stage as it finishes with its duration, peak memory and the
+image it ran in, then the metrics, artifacts and variant count.
+
+### Know the answer before you run it
+
+`make fixtures` synthesises reads, an ARTIC primer scheme and an assembly from
+the LSDV reference **with substitutions planted at known positions**, and
+prints them:
+
+```text
+planted   : 25001A>G, 32346T>C, 41001A>G
+  (1-based positions; every run of either pipeline must report these 3)
+```
+
+A run that reports something else is wrong, and you can see that without a
+reference result to diff against. It is seeded, so your fixtures are
+byte-identical to everyone else's and to yesterday's.
+
+These are **not a substitute for real data.** The reads are perfect apart from
+a uniform substitution rate. They prove the plumbing, the tool invocations and
+the resource limits. They prove nothing about whether a variant call is
+biologically right.
+
+### When a stage fails
+
+The full log is at `$RUNS_ROOT/<run_id>/logs/NN_<stage>.log`, and the first
+line of it is **the exact `docker run` command**. Copy that line and run it
+yourself — it reproduces the failure with no Python in the way.
+
+### One thing that is not testable on an Apple Silicon Mac
+
+The tool images are `linux/amd64`. Most run fine under emulation, but some
+binaries compiled with SSE instructions do not: `vcfstreamsort` and `vcfuniq`
+inside the snippy image die with SIGILL (exit 132), so **`snippy-fasta` cannot
+complete locally on an M-series Mac**. It is not a code defect and there is no
+workaround short of an amd64 host. `ont-lsdv` runs end to end fine.
 
 ---
 
@@ -543,7 +588,16 @@ Before opening a PR:
 - [ ] Resource estimates are declared on every `StageSpec`
 - [ ] Files worth keeping are published with `ctx.artifact()`; everything else
       is left in `work_dir` to be deleted
-- [ ] `pytest tests/test_all_pipelines.py -q` passes — no new test file needed
+- [ ] `make check` and `make test` pass — the contract kit covers your pipeline
+      automatically, so no new test file is needed for the contract itself
+- [ ] `make smoke PIPELINE=<your-id>` completes and reports the planted
+      variants. A pipeline that has never run end to end is not finished
+- [ ] `make images-list` shows every image you declared resolving to a real
+      reference, and you checked the `shared` scope first rather than
+      declaring your own copy of something that already exists
+- [ ] Every custom image you added has been pushed (`make images-push`), or
+      says so in the PR — an unpushed image works on your laptop and nowhere
+      else, and that failure surfaces in production, not in CI
 
 ---
 
@@ -565,6 +619,10 @@ reason several rules above exist.
 | `bcftools call` without `--ploidy 1` | Emits heterozygous genotypes for a haploid virus. |
 | Medaka fed the raw FASTQ while alignment used the filtered one | Enabling NanoFilt silently gave two stages different input. |
 | `:latest` image tags | Two runs a month apart quietly use different tool versions. Unreproducible. |
+| Pinning only the tools you name | `nanoplot=1.42.0` was pinned and satisfied. An **unpinned transitive** dependency (`python-kaleido`) resolved to a major version that removed a module NanoPlot imports, and the default QC tool died at import. Pin what breaks you, not just what you asked for. |
+| An image tag nobody checked exists | `ontresearch/medaka:2.0.1` was declared for months. That repository publishes only `latest` and `sha<commit>` tags, so the tag had never been pullable and the Medaka path had never run. `make images-list` shows a `LOCAL` column for exactly this reason. |
+| A reference path that is valid in the app image | snippy got `--ref /app/data/ref.fasta` and reported "Invalid --reference filename". Stage containers mount `REFS_ROOT` at its **host** path and have no `/app`. Anything you hand a tool must be under `RUNS_ROOT` or `REFS_ROOT`. |
+| A primer scheme for a different organism | ARTIC `align_trim` matches primers by contig name. Given a SARS-CoV-2 scheme against an LSDV reference it matched nothing, trimmed nothing, **exited 0**, and the run recorded untrimmed reads as trimmed. Validate that inputs refer to the same genome; a tool exiting 0 is not evidence it did anything. |
 
 ---
 

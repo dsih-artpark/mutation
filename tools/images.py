@@ -291,6 +291,21 @@ def cmd_push(args) -> None:
         run(["docker", "push", tagged_ref(entry)])
 
 
+def cmd_refs(args) -> None:
+    """One reference per line, for a shell loop to consume.
+
+    `make images-push` runs `docker push` on the host, because registry
+    credentials live in an OS keychain via a credential helper and do not reach
+    a container that mounts only the socket. Walking the manifests still
+    belongs in here, so the host side needs no Python: this prints what to
+    push, and the caller pushes it.
+    """
+    for _, (entry, _base) in selected(args.scope).items():
+        if args.build_only and entry.get("source") != "build":
+            continue
+        print(tagged_ref(entry))
+
+
 def cmd_lock(args) -> None:
     """Resolve every image to a digest, uniformly for built and pulled images."""
     locked: dict[str, dict] = {}
@@ -346,14 +361,17 @@ def main() -> None:
 
     for name, handler in (
         ("build", cmd_build), ("push", cmd_push), ("lock", cmd_lock), ("pull", cmd_pull),
-        ("list", cmd_list),
+        ("list", cmd_list), ("refs", cmd_refs),
     ):
         child = sub.add_parser(name)
         child.set_defaults(handler=handler)
-        if name in ("build", "push", "list"):
+        if name in ("build", "push", "list", "refs"):
             child.add_argument("--scope", default=None, help="limit to one manifest scope")
         if name == "list":
             child.add_argument("--json", action="store_true", help="machine-readable output")
+        if name == "refs":
+            child.add_argument("--build-only", action="store_true",
+                               help="omit images pulled from an upstream registry")
 
     args = parser.parse_args()
     args.handler(args)
