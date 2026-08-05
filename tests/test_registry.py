@@ -88,3 +88,45 @@ def test_every_pipeline_package_is_discovered_without_an_import_line():
     # subpackage that the scan silently failed to pick up -- that still shows
     # up as `packages` having a member `registered` lacks.
     assert packages <= registered, f"packages {packages} not <= registered {registered}"
+
+
+def test_snippy_resources_are_clamped_to_what_the_container_grants(tmp_path):
+    """The schema allows ram_gb up to 32, but the runner caps the container at
+    MAX_STAGE_MEMORY_GB. Snippy must never be told it has more memory than the
+    container will grant, or it is OOM-killed at exit 137 with nothing in the
+    log explaining why. The schema maxima stay high deliberately -- the ceilings
+    are env-configurable -- so the reconciliation belongs at the use site.
+    """
+    from app.config import MAX_STAGE_CPUS, MAX_STAGE_MEMORY_GB
+    from app.runtime.context import RunContext, RunPaths
+    from app.runtime.spec import CompletedStage, MissingOutput
+
+    calls = []
+
+    class _Stub:
+        def run(self, stage, spec, argv, env=None, stdout_path=None):
+            calls.append((spec, list(argv)))
+            return CompletedStage(stage, 0, 0.0, None, tmp_path / "l.log", "", spec.image)
+
+    paths = RunPaths.for_run(tmp_path / "runs", "run-clamp").create()
+    ctx = RunContext(
+        run_id="run-clamp",
+        params={"cpus": 16, "ram_gb": 16},   # both above the shipped ceilings
+        paths=paths,
+        refs_dir=tmp_path / "refs",
+        stages=["snippy", "annotate", "visualise"],
+        input_name="assembly.fasta",
+    )
+    ctx.runner = _Stub()
+
+    # The stub writes no snps.vcf, so the run stops at the first require().
+    with pytest.raises(MissingOutput):
+        registry.get("snippy-fasta").run(ctx)
+
+    spec, argv = calls[0]
+    told_cpus = int(argv[argv.index("--cpus") + 1])
+    told_ram = int(argv[argv.index("--ram") + 1])
+    granted_gb = min(spec.memory_gb, MAX_STAGE_MEMORY_GB)
+
+    assert told_cpus <= MAX_STAGE_CPUS
+    assert told_ram < granted_gb, "snippy was promised the whole container, leaving no headroom"

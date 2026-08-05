@@ -93,6 +93,18 @@ def test_entrypoint_override_is_passed_through(tmp_path):
     assert cmd[cmd.index("--entrypoint") + 1] == "/bin/sh"
 
 
+def test_missing_docker_binary_gives_an_actionable_error(runner, spec, monkeypatch):
+    """cmd[0] is always DOCKER_BIN now, so this branch means 'the worker cannot
+    reach Docker' -- which fails every stage of every run."""
+    from app.runtime import runner as runner_module
+
+    monkeypatch.setattr(runner_module, "DOCKER_BIN", "/definitely/not/a/real/docker")
+    with pytest.raises(StageFailed) as exc:
+        runner.run("nope", spec, ["true"])
+    assert exc.value.exit_code == 127
+    assert "socket mounted" in exc.value.log_tail
+
+
 def test_with_returns_a_modified_copy():
     base = StageSpec(image="a", cpus=2, memory_gb=4)
     bumped = base.with_(memory_gb=16)

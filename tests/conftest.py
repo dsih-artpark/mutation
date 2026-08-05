@@ -78,5 +78,14 @@ def client():
 
 @pytest.fixture
 def docker_required():
-    if not docker_available():
-        pytest.skip("Docker is not available")
+    """Skip when Docker is absent -- unless REQUIRE_DOCKER says not to.
+
+    Seven of the runner's safety properties only execute with a daemon, so a
+    green run proves less than it looks like on a machine without one. CI sets
+    REQUIRE_DOCKER=1 to turn that silent skip into a failure.
+    """
+    if docker_available():
+        return
+    if os.getenv("REQUIRE_DOCKER", "").lower() in ("1", "true", "yes"):
+        pytest.fail("Docker is required (REQUIRE_DOCKER is set) but not available")
+    pytest.skip("Docker is not available")

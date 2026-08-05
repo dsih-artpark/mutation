@@ -1,9 +1,55 @@
 """RunContext: run isolation, artifact publishing, soft-failure detection."""
 
+from pathlib import Path
+
 import pytest
 
 from app.runtime.context import RunContext, RunPaths
-from app.runtime.spec import MissingOutput, StageFailed
+from app.runtime.spec import CompletedStage, MissingOutput, StageFailed, StageSpec
+
+
+class _StubRunner:
+    """Stands in for StageRunner: records the call, runs no process.
+
+    Honours this suite's no-subprocess rule while still exercising the part of
+    RunContext.run that matters -- propagating peak memory and image out of a
+    CompletedStage and into the run record.
+    """
+
+    def __init__(self, log_dir: Path):
+        self.calls: list[dict] = []
+        self._log_dir = log_dir
+
+    def run(self, stage, spec, argv, env=None, stdout_path=None) -> CompletedStage:
+        self.calls.append({"stage": stage, "spec": spec, "argv": list(argv)})
+        return CompletedStage(
+            name=stage,
+            exit_code=0,
+            duration_s=0.01,
+            peak_memory_mb=512.0,
+            log_path=self._log_dir / f"{stage}.log",
+            stdout_tail="",
+            image="x:1",
+        )
+
+
+class _RecordingRecorder:
+    """Captures stage_finished. The image lands here, not in stage_log."""
+
+    def __init__(self):
+        self.finished: list[tuple] = []
+        self.messages: list[str] = []
+
+    def log(self, message): self.messages.append(message)
+
+    def stage_started(self, name, ordinal): pass
+
+    def stage_finished(self, name, duration_s, peak_memory_mb, image):
+        self.finished.append((name, duration_s, peak_memory_mb, image))
+
+    def stage_failed(self, name, message, exit_code): pass
+
+    def stage_skipped(self, name, reason): pass
 
 
 @pytest.fixture
@@ -14,9 +60,17 @@ def ctx(tmp_path):
         params={"variant": {"tool": "clair3"}, "threads": 6},
         paths=paths,
         refs_dir=tmp_path / "refs",
+        recorder=_RecordingRecorder(),
         stages=["one", "two"],
         input_name="reads.fastq.gz",
     )
+
+
+@pytest.fixture
+def stub(ctx):
+    """Swap the real runner for the stub; returned for call assertions."""
+    ctx.runner = _StubRunner(ctx.paths.logs)
+    return ctx.runner
 
 
 def test_each_run_gets_isolated_directories(tmp_path):
@@ -68,16 +122,37 @@ def test_artifact_moves_the_file_into_output(ctx):
     assert ctx.result.artifacts[0].kind == "vcf"
 
 
-def test_stage_records_success_with_timing(ctx):
-    # No subprocess: this asserts the bookkeeping ctx.stage() does around a
-    # body, not that a tool ran. Execution is test_runner.py's concern.
+def test_stage_records_success_with_timing(ctx, stub):
     with ctx.stage("one"):
-        pass
+        ctx.run(StageSpec(image="x:1"), ["true"])
 
     assert len(ctx.stage_log) == 1
     entry = ctx.stage_log[0]
     assert entry["status"] == "SUCCEEDED"
     assert entry["duration_s"] >= 0
+    # Real work happened, so the stage carries the runner's telemetry rather
+    # than the None an empty stage body would leave behind.
+    assert entry["peak_memory_mb"] == 512.0
+
+
+def test_run_propagates_peak_memory_and_image_out_of_the_runner(ctx, stub):
+    """CompletedStage telemetry has to reach the run record; conftest pins
+    STATS_SAMPLE_INTERVAL_S=0, so a real container could never cover this."""
+    with ctx.stage("one"):
+        ctx.run(StageSpec(image="x:1"), ["true"])
+
+    assert ctx.stage_log[0]["peak_memory_mb"] == 512.0
+    # The image lands on the recorder, not in stage_log.
+    name, _duration, peak, image = ctx.recorder.finished[0]
+    assert (name, peak, image) == ("one", 512.0, "x:1")
+
+
+def test_run_outside_a_stage_is_labelled_unnamed(ctx, stub):
+    """The `self._current_stage or "unnamed"` fallback: a pipeline may call
+    ctx.run() outside any stage block, and the log file still needs a name."""
+    ctx.run(StageSpec(image="x:1"), ["true"])
+
+    assert stub.calls[0]["stage"] == "unnamed"
 
 
 def test_stage_records_failure_and_reraises(ctx):

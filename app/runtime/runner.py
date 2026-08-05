@@ -237,7 +237,16 @@ class StageRunner:
 
     # -- shared ------------------------------------------------------------
 
-    def _spawn(self, cmd, log_path, stdout_path, timeout_s, env=None, cwd=None, header=None):
+    def _spawn(self, cmd, log_path, stdout_path, timeout_s, header=None):
+        """Spawn `cmd` and wait for it.
+
+        Deliberately takes no env or cwd: `cmd` is a `docker run` invocation, so
+        those would configure the *docker CLI* on the worker, not the tool. A
+        stage's environment reaches the tool through the -e flags docker_argv
+        builds; passing it here would instead replace the worker's own
+        environment, dropping PATH and DOCKER_HOST, while the container saw
+        nothing new.
+        """
         timeout_s = timeout_s or DEFAULT_STAGE_TIMEOUT_S
 
         with open(log_path, "ab") as log:
@@ -251,8 +260,6 @@ class StageRunner:
                     cmd,
                     stdout=out_target,
                     stderr=log,
-                    env=env,
-                    cwd=cwd,
                     close_fds=True,
                 )
                 try:

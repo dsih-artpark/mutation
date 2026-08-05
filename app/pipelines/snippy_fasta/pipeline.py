@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import shutil
 
-from ...config import REFERENCE, SNPEFF_DB
+from ...config import MAX_STAGE_CPUS, MAX_STAGE_MEMORY_GB, REFERENCE, SNPEFF_DB
 from ...runtime.context import RunContext, RunResult
 from ...vcf import parse_annotated_vcf, summarise
 from ..base import Pipeline
@@ -64,8 +64,28 @@ class SnippyFastaPipeline(Pipeline):
 
     def run(self, ctx: RunContext) -> RunResult:
         fasta = ctx.input_dir / self.input_filename
-        cpus = int(ctx.param("cpus", 2))
-        ram = int(ctx.param("ram_gb", 2))
+
+        # Clamp to what the stage will actually be given. The runner caps the
+        # container at MAX_STAGE_*, so promising snippy more than that gets it
+        # OOM-killed at exit 137 with nothing in the log to explain why. The
+        # schema maxima stay high on purpose: the ceilings are env-configurable,
+        # so raising MAX_STAGE_MEMORY_GB widens this range with no code change.
+        # Mirrors common.threads() on the ONT side.
+        requested_cpus = int(ctx.param("cpus", 2))
+        requested_ram = int(ctx.param("ram_gb", 2))
+
+        cpus = max(1, min(requested_cpus, int(MAX_STAGE_CPUS)))
+        # One below the ceiling: the stage requests ram + 1 so snippy keeps
+        # headroom inside its own container.
+        ram = max(1, min(requested_ram, int(MAX_STAGE_MEMORY_GB) - 1))
+
+        if cpus != requested_cpus:
+            ctx.log(f"[clamp] cpus {requested_cpus} -> {cpus} (MAX_STAGE_CPUS={MAX_STAGE_CPUS:g})")
+        if ram != requested_ram:
+            ctx.log(
+                f"[clamp] ram_gb {requested_ram} -> {ram} "
+                f"(MAX_STAGE_MEMORY_GB={MAX_STAGE_MEMORY_GB:g}, minus 1GB headroom)"
+            )
 
         # ---------------- Snippy ----------------
         snippy_out = ctx.work_dir / "snippy"
