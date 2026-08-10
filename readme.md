@@ -5,7 +5,7 @@ when they finish. Built so that adding a new pipeline is a backend-only change �
 no API, database or frontend work.
 
 | Pipeline | Input | Tools |
-|---|---|---|
+| --- | --- | --- |
 | `snippy-fasta` | assembled FASTA | Snippy → snpEff → interactive plot |
 | `ont-lsdv` | Oxford Nanopore FASTQ | NanoPlot/fastp → minimap2 → ARTIC align_trim → bcftools/Medaka/Clair3 → consensus → snpEff |
 
@@ -91,19 +91,18 @@ docker compose up -d --build
 
 # Pre-pull the tool images so the first real run isn't a long download.
 # Reads images.lock.json and pulls every image at its locked digest.
-docker compose exec worker python tools/images.py pull
+make images-pull
 
 curl localhost:8000/health
 ```
 
-⚠ **`tools/images.py pull` needs `images.lock.json`, and this repository does
-not have one yet.** The lock file is produced by `make images-lock`, which can
-only resolve a digest for an image that has already been **built and pushed** to
-a registry — and the custom images have not been pushed (see [Known
-gaps](#known-gaps)). Until that happens the command exits with
-`images.lock.json is missing or malformed`, the resolver falls back to the
-mutable tags in the manifests, and each image is pulled on demand during the
-first run that needs it. That works; it is just slower and not reproducible.
+`make images-pull` fetches roughly **9 GB** across six images. It is optional —
+anything missing is pulled on demand by the first run that needs it — but doing
+it up front means the first submission does not appear to hang for ten minutes.
+
+Set `REQUIRE_PINNED_IMAGES=true` in production. Every image in
+`images.lock.json` resolves to a `@sha256:` digest, and with this set the
+service refuses to start if any image would resolve to a mutable tag instead.
 
 ---
 
@@ -151,7 +150,7 @@ artifact download URLs, metrics, and webhook delivery state.
 ### Other endpoints
 
 | Endpoint | Purpose |
-|---|---|
+| --- | --- |
 | `GET /v1/runs?pipeline_id=&status=&limit=` | list runs |
 | `GET /v1/runs/{id}/artifacts/{filename}` | download a result file |
 | `POST /v1/runs/{id}/redeliver` | re-send the webhook manually |
@@ -179,7 +178,7 @@ X-Dharini-Signature: sha256=<hmac>
 {
   "event": "run.completed",
   "delivery_id": "…", "attempt": 1,
-  "run": { "id": "…", "pipeline_id": "ont-lsdv", "pipeline_version": "1.0.0",
+  "run": { "id": "…", "pipeline_id": "ont-lsdv", "pipeline_version": "1.1.0",
            "status": "SUCCEEDED", "duration_s": 412.7, "params": {…},
            "error": null },
   "metrics": { "variant_count": 37, "snp_count": 31, "by_impact": {"HIGH": 2},
@@ -320,41 +319,155 @@ still caught.
 
 ## Local development
 
-**Docker is the only prerequisite.** There is no virtualenv to create, no
-`pip install` to run and no conda environment to set up — not for the
-bioinformatics tools, which have always run in their own containers, and not for
-the application either. Every `make` target runs inside the `dev` stage of this
-repository's own `Dockerfile`:
+**Docker is the only prerequisite.** No virtualenv, no `pip install`, no conda —
+not for the bioinformatics tools, which have always run in their own containers,
+and not for the application either. Every `make` target runs inside the `dev`
+stage of this repository's own `Dockerfile`. If a command here asks you to
+install something on your machine, that is a bug in the command.
+
+### First time
 
 ```bash
+git clone <this repo> && cd sequencing
 cp .env.example .env      # defaults to SQLite + local runs/ — no Postgres needed
-docker compose up -d --build
 
-make test                 # the suite, in a container
-make images-list          # what images exist, and who uses them
+make images-pull          # ~9 GB, once. All six tool images at their locked digest.
+make check                # contracts and manifests          (~1s)
+make test                 # the whole suite, in a container  (~7s)
 ```
 
-`make help` lists the rest: `dev-image`, `images-build`, `images-push`,
-`images-lock`, `images-pull`, `test-fast`, `check`, `shell`.
+The custom images are already published to
+[`dsihartpark`](https://hub.docker.com/u/dsihartpark) on Docker Hub, so
+`make images-pull` is a download — you do **not** need to build them:
 
-The `dev` service sits behind a compose profile, so `docker compose up` never
-starts it. It mounts this checkout **at its own host path** and mounts the Docker
-socket, for the reason described under [Path parity](#-path-parity): the
+| Image | Contents |
+| --- | --- |
+| `dsihartpark/dharini-ont-core` | minimap2, samtools, bcftools, fastp, NanoFilt, NanoPlot |
+| `dsihartpark/dharini-align-trim` | ARTIC `align_trim` + samtools |
+| `dsihartpark/dharini-snpeff` | snpEff with the LSDV database prebuilt |
+| `dsihartpark/dharini-snippy` | Snippy and its full toolchain |
+
+Medaka and Clair3 are pulled unmodified from upstream registries.
+
+`make help` lists every target.
+
+### Run a pipeline on your own file
+
+This is the loop to live in. `tools/run_local.py` builds the **same**
+`RunContext` the Celery worker builds, applies the **same** schema validation
+and defaults the API applies, and executes the **same** stages in the **same**
+tool containers. It skips only Postgres, Redis, the queue and HTTP — the parts
+you are not debugging. A green run here means the pipeline works, not that a
+test harness is happy.
+
+**First, copy your data into the checkout.** The dev container mounts this
+directory and nothing else, so a path like `~/data/reads.fastq.gz` does not
+exist inside it. `fixtures/` is git-ignored and exists for exactly this:
+
+```bash
+mkdir -p fixtures
+cp ~/wherever/reads.fastq.gz fixtures/
+cp ~/wherever/scheme.bed     fixtures/
+```
+
+Then run it. Paths are relative to the repository root:
+
+```bash
+# ONT FASTQ, default settings (Clair3)
+make smoke INPUT=fixtures/reads.fastq.gz
+
+# Pick a caller, turn on primer trimming, supply a scheme
+make smoke INPUT=fixtures/reads.fastq.gz \
+  ARGS="--param variant.tool=bcftools \
+        --param primer.enabled=true \
+        --extra primer_bed=fixtures/scheme.bed \
+        --keep"
+
+# The other pipeline
+make smoke PIPELINE=snippy-fasta INPUT=fixtures/your-assembly.fasta
+```
+
+`--param` takes dotted keys and JSON values, so `--param threads=8` is a number
+and `--param primer.enabled=true` is a boolean. `--extra key=path` supplies a
+secondary input. `--keep` retains `work/`, which the worker normally purges.
+`--run-id NAME` gives the run a name you choose instead of a timestamp.
+
+Every parameter either pipeline accepts, with its default and its meaning:
+
+```bash
+curl -s localhost:8000/v1/pipelines | jq '.[] | {id, params_schema}'
+```
+
+Output goes to `runs/<run-id>/`:
+
+```text
+runs/<run-id>/input/     what you supplied, under a normalised filename
+runs/<run-id>/work/      scratch — deleted unless you passed --keep
+runs/<run-id>/output/    published artifacts: VCFs, consensus, QC report
+runs/<run-id>/logs/      one log per stage
+```
+
+### Don't have real data yet?
+
+```bash
+make fixtures
+```
+
+Synthesises reads, an ARTIC primer scheme and an assembly from the LSDV
+reference **with substitutions planted at known positions**, and tells you which:
+
+```text
+planted   : 25001A>G, 32346T>C, 41001A>G
+  (1-based positions; every run of either pipeline must report these 3)
+```
+
+So you can tell a working run from a broken one without a reference result to
+diff against. It is seeded — everyone's fixtures are byte-identical.
+
+It writes three files, and these commands run as written:
+
+```bash
+make smoke INPUT=fixtures/reads.fastq.gz \
+  ARGS="--param primer.enabled=true --extra primer_bed=fixtures/scheme.bed"
+
+make smoke PIPELINE=snippy-fasta INPUT=fixtures/query.fasta
+```
+
+These prove the plumbing, the tool invocations and the resource limits. The
+reads are perfect apart from a uniform substitution rate, so they prove nothing
+biological. Use real data before trusting a variant call.
+
+### When a stage fails
+
+The full log is at `runs/<run-id>/logs/NN_<stage>.log`, and **its first line is
+the exact `docker run` command**. Copy that line, run it yourself, and you have
+reproduced the failure with no Python in the way.
+
+### ⚠ One thing you cannot test on an Apple Silicon Mac
+
+The tool images are `linux/amd64`. Most run fine under emulation, but binaries
+compiled with SSE instructions do not: `vcfstreamsort` and `vcfuniq` inside the
+Snippy image die with SIGILL (exit 132). **`snippy-fasta` therefore cannot
+complete on an M-series Mac** — it reaches variant calling and dies there. Not a
+code defect, and there is no workaround short of an amd64 host. `ont-lsdv` runs
+end to end fine on both architectures.
+
+### How the dev container is wired
+
+It sits behind a compose profile, so `docker compose up` never starts it. It
+mounts this checkout **at its own host path** and mounts the Docker socket, for
+the reason described under [Path parity](#-path-parity): the pipeline and the
 container-backed tests start sibling containers with bind mounts, and the daemon
 resolves a bind-mount source on the host. Parity is what makes one path string
 valid on both sides. The `Makefile` passes that path as `DHARINI_REPO`.
 
-To pull the tool images each manifest declares, rather than waiting for the first
-run to fetch them:
-
-```bash
-make images-pull
-```
-
-This needs `images.lock.json`, which does not exist yet — see the warning under
-[Quick start](#quick-start-production--single-host). Without it, each image is
-pulled on demand the first time a stage needs it, at whatever mutable tag its
-manifest declares.
+`make images-push` is the one target that does **not** run in the container.
+Registry credentials never cross the container boundary — `docker login` stores
+them through a credential helper backed by the OS keychain, so a container that
+mounts only the socket authenticates as nobody and the push fails with
+`insufficient_scope: authorization failed`, which reads like an account problem
+rather than a missing credential. Walking the manifests still happens inside the
+container; only `docker push` runs on the host.
 
 ### What images already exist
 
@@ -401,7 +514,8 @@ failure means a class of bug has come back.
 
 ## Adding a pipeline
 
-See **[docs/PIPELINE_AUTHORING.md](docs/PIPELINE_AUTHORING.md)**.
+See **[docs/PIPELINE_AUTHORING.md](docs/PIPELINE_AUTHORING.md)** for the full
+contract, the rules and a worked example.
 
 Short version: **a pipeline is one new directory under `app/pipelines/`** — a
 package implementing `Pipeline`, plus a `manifest.yaml` declaring the container
@@ -410,28 +524,139 @@ every subpackage with `pkgutil` at startup, and each one registers itself.
 
 ---
 
+## Adding a custom tool image
+
+Most tools already have a usable image somewhere. **Check before you build one:**
+
+```bash
+make images-list
+```
+
+If the tool exists on Docker Hub, quay.io or a biocontainer, declare it as
+`source: registry` and stop — there is nothing to build or maintain. If the
+image you need already appears in the `shared` scope, reference it by its
+qualified key (`shared:snpeff-lsdv`) instead of declaring a copy.
+
+Build your own only when no published image works — the tool is unpublished
+(ARTIC `align_trim`), or the published one is not configured for our data
+(snpEff without the LSDV database).
+
+### 1. Where the code goes
+
+| Used by | Dockerfile | Declared in |
+| --- | --- | --- |
+| One pipeline | `app/pipelines/<your_pipeline>/docker/<key>/Dockerfile` | that pipeline's `manifest.yaml` |
+| Two or more | `shared/docker/<key>/Dockerfile` | `shared/manifest.yaml` |
+
+Start it in your own pipeline. Move it to `shared/` the day a second pipeline
+needs it — not in anticipation of one.
+
+### 2. Write the Dockerfile
+
+Copy `app/pipelines/ont_lsdv/docker/align-trim/Dockerfile` as a template:
+
+```dockerfile
+FROM mambaorg/micromamba:1.5-jammy
+USER root
+RUN micromamba install -y -n base -c bioconda -c conda-forge \
+      your-tool=1.2.0 \
+      samtools=1.21 \
+ && micromamba clean -a -y
+ENV PATH=/opt/conda/bin:$PATH
+```
+
+Four rules, each of which exists because breaking it has already cost us:
+
+- **Pin every version, including transitive ones.** `nanoplot=1.42.0` was
+  pinned and satisfied, but an unpinned transitive `python-kaleido` resolved to
+  a major version that removed a module NanoPlot imports, and the default QC
+  tool died at import. Pin what breaks you, not just what you asked for.
+- **Never set an `ENTRYPOINT`.** The runner always supplies a complete argv; an
+  entrypoint would prepend itself to it and corrupt the command.
+- **Tools on either side of a shell pipe must share one image.** `align_trim`
+  streams SAM into `samtools sort`, so both live in the align-trim image.
+  Splitting them would mean materialising an intermediate SAM several times the
+  size of the BAM.
+- **Match shared tool versions across images.** align-trim pins the same
+  `samtools=1.21` as `core`, so the two cannot disagree about BAM handling.
+
+Find available versions without installing anything locally:
+
+```bash
+docker run --rm --platform linux/amd64 mambaorg/micromamba:1.5-jammy \
+  micromamba search -c bioconda -c conda-forge your-tool
+```
+
+### 3. Declare it
+
+In the `manifest.yaml` beside your pipeline:
+
+```yaml
+images:
+  your-tool:
+    source: build                       # `registry` if you are pulling one
+    dockerfile: docker/your-tool/Dockerfile
+    context: docker/your-tool
+    repository: dsihartpark/dharini-your-tool
+    version: "1.0.0"                    # never `latest` — the loader rejects it
+    platform: linux/amd64
+```
+
+`repository` must sit under `dsihartpark/`; a contract test fails the build if
+an image is declared under any other namespace, so a personal account cannot
+reach production by accident.
+
+### 4. Use it
+
+In your pipeline's `specs.py` — by key, never by image string, so the manifest
+and the digest lock stay authoritative:
+
+```python
+YOUR_TOOL = StageSpec(image=img("your-tool"), cpus=2, memory_gb=4, timeout_s=3600)
+```
+
+### 5. Build, test, publish
+
+```bash
+make images-build SCOPE=<your-pipeline-scope>   # or omit SCOPE for everything
+make smoke INPUT=fixtures/reads.fastq.gz        # prove it actually runs
+make images-push                                # needs `docker login` on the host
+make images-lock                                # record the digest
+```
+
+Commit the updated `images.lock.json`. **An image that is built but not pushed
+works on your laptop and nowhere else**, and that failure appears in production
+rather than in CI. `.github/workflows/images.yml` rebuilds, pushes and refreshes
+the lock whenever a manifest or Dockerfile changes on `main`.
+
+---
+
 ## Known gaps
 
-1. **The custom images have never been pushed.** Every image is now declared in
-   a `manifest.yaml` and every custom one has a Dockerfile in this repository
-   (`shared/docker/`, `app/pipelines/ont_lsdv/docker/`), built on micromamba +
-   bioconda — the `suhas0/*` personal-account images are gone. What remains is
-   that nothing has been published to `dsihartpark/*`: the registry namespace is
-   unconfirmed and `docker push` has not been authorised. Until it is,
-   `make images-push && make images-lock` cannot run.
-2. **There is no `images.lock.json`, so nothing is digest-pinned yet.** The
-   machinery is in place — `make images-lock` resolves every declared image to a
-   digest, `app/runtime/images.py` prefers a locked digest over the manifest tag,
-   `REQUIRE_PINNED_IMAGES=true` makes an unpinned image a startup failure, and
-   `.github/workflows/images.yml` regenerates and commits the lock on every
-   change to a manifest or Dockerfile. All of it is blocked on gap 1. Until the
-   lock file exists, images resolve to their manifest tags: pinned to an exact
-   version string, but a tag can be re-pushed, so two runs months apart are not
-   provably identical.
-3. **The worker mounts the Docker socket**, which is root-equivalent access to
+1. **Large inputs still go through a multipart upload.** Dharini posts the file
+   to `POST /v1/runs` and the request holds it for the duration. That is fine
+   for an assembled FASTA and wrong for a ~1 GB ONT FASTQ. The intended flow —
+   Dharini uploads to S3, then submits a JSON body naming the object plus a
+   callback URL, and the run fetches it as its first stage — is designed but
+   **not built**. This is the main thing between here and production ONT use.
+2. **No real LSDV primer scheme exists in this repository.** Primer trimming is
+   implemented and verified against a *synthesised* scheme, and a scheme whose
+   contigs do not match the reference is now rejected outright. But no run has
+   ever used a genuine LSDV amplicon design, because nobody has supplied one.
+   Until then, leave `primer.enabled` false.
+3. **`snippy-fasta` has not been run end to end since containerisation.** Its
+   reference-path bug is fixed and it now reaches variant calling, but the
+   vcflib binaries in the Snippy image cannot execute under amd64 emulation on
+   Apple Silicon (SIGILL), so the run cannot be completed on a developer Mac.
+   **Run it once on the amd64 host before trusting it.**
+4. **Variant calls have only been checked against synthetic reads.** All three
+   ONT callers report exactly the planted substitutions, which proves the
+   invocations, the plumbing and the resource limits. It proves nothing about
+   accuracy on real basecalled data — in particular the Medaka model must match
+   the basecaller that produced the reads, and a mismatch degrades calls
+   silently.
+5. **The worker mounts the Docker socket**, which is root-equivalent access to
    the host. Acceptable only because no client input ever reaches a shell — do
    not add a code path that changes that.
-4. **Medaka and Clair3 invocations are adapted but unverified** against real
-   data; they need one confirmation run each before being trusted.
-5. `init_db()` uses `create_all`. Fine for this schema — introduce Alembic
+6. `init_db()` uses `create_all`. Fine for this schema — introduce Alembic
    before the first migration that has to preserve data.

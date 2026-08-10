@@ -335,6 +335,13 @@ def cmd_lock(args) -> None:
         locked[name] = {
             "repository": entry["repository"],
             "version": str(entry["version"]),
+            # Recorded so cmd_pull needs nothing but this file. Every image here
+            # is a single-platform manifest list, and `docker pull` without
+            # --platform resolves against the HOST architecture -- so on an
+            # arm64 developer machine it fails with "no matching manifest for
+            # linux/arm64/v8", which reads as a broken or missing image rather
+            # than a pull asking for the wrong architecture.
+            "platform": entry.get("platform", "linux/amd64"),
             "digest": digest,
             "ref": f"{entry['repository']}@{digest}",
         }
@@ -352,7 +359,9 @@ def cmd_pull(args) -> None:
 
     for name, entry in sorted(lock.items()):
         print(f"\n=== pull {name} ===")
-        run(["docker", "pull", entry["ref"]])
+        # Default for locks written before `platform` was recorded.
+        run(["docker", "pull", "--platform", entry.get("platform", "linux/amd64"),
+             entry["ref"]])
 
 
 def main() -> None:

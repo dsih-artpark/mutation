@@ -4,36 +4,42 @@
     "ont-lsdv:align-trim": {
       "repository": "dsihartpark/dharini-align-trim",
       "version": "1.0.0",
+      "platform": "linux/amd64",
       "digest": "sha256:348283c730f93ba3cce190c18b13663c24d68628b3a990ad6cb313fd0301c2ac",
       "ref": "dsihartpark/dharini-align-trim@sha256:348283c730f93ba3cce190c18b13663c24d68628b3a990ad6cb313fd0301c2ac"
     },
     "ont-lsdv:clair3": {
       "repository": "hkubal/clair3",
       "version": "v1.0.10",
+      "platform": "linux/amd64",
       "digest": "sha256:57cf5d20f2ee39c1b91493ad1fb5c1b9fa838691efce818c3139caa5e6c6b974",
       "ref": "hkubal/clair3@sha256:57cf5d20f2ee39c1b91493ad1fb5c1b9fa838691efce818c3139caa5e6c6b974"
     },
     "ont-lsdv:core": {
       "repository": "dsihartpark/dharini-ont-core",
       "version": "1.0.0",
+      "platform": "linux/amd64",
       "digest": "sha256:314f8675386363d911f7eab1aef6e1b3084fbf159de227061218f11140034f6e",
       "ref": "dsihartpark/dharini-ont-core@sha256:314f8675386363d911f7eab1aef6e1b3084fbf159de227061218f11140034f6e"
     },
     "ont-lsdv:medaka": {
       "repository": "quay.io/biocontainers/medaka",
       "version": "2.1.1--py311h1d3aea1_1",
+      "platform": "linux/amd64",
       "digest": "sha256:f6fac4d7d61d013b2370d6321c7fb96547dac7b55e09e067450829ac33109fa6",
       "ref": "quay.io/biocontainers/medaka@sha256:f6fac4d7d61d013b2370d6321c7fb96547dac7b55e09e067450829ac33109fa6"
     },
     "shared:snippy": {
       "repository": "dsihartpark/dharini-snippy",
       "version": "4.6.0-1",
+      "platform": "linux/amd64",
       "digest": "sha256:57dd28923cd27f1b38b07a168f18c4a57ebafd44286620571aee2943a897ca4c",
       "ref": "dsihartpark/dharini-snippy@sha256:57dd28923cd27f1b38b07a168f18c4a57ebafd44286620571aee2943a897ca4c"
     },
     "shared:snpeff-lsdv": {
       "repository": "dsihartpark/dharini-snpeff",
       "version": "5.4-lsdv-1",
+      "platform": "linux/amd64",
       "digest": "sha256:68029a2b252b7f2db070c6282fa84184360b050487093fbd5beaf29ffbbf77aa",
       "ref": "dsihartpark/dharini-snpeff@sha256:68029a2b252b7f2db070c6282fa84184360b050487093fbd5beaf29ffbbf77aa"
     }

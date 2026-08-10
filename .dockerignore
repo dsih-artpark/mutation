@@ -20,7 +20,6 @@ runs/
 **/*.pyo
 .DS_Store
 snpeff_build/
-snpEff_summary.html
 
 # Superseded standalone pipeline, kept in-tree for reference only.
 # Spelled exactly as the directory is spelled on disk -- dockerignore matching is

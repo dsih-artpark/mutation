@@ -5,6 +5,7 @@ for the command line and may not import app.* (see its module docstring), so it
 restates those three rules. Those tests exist to keep the two copies honest.
 """
 
+import argparse
 import json
 from pathlib import Path
 
@@ -458,3 +459,65 @@ def test_a_stray_namespace_is_actually_caught(synthetic_repo):
 
     with pytest.raises(AssertionError, match="someones-laptop/aligner"):
         test_every_built_image_shares_one_registry_namespace()
+
+
+# -- pull honours the declared platform --------------------------------------
+
+def test_the_lock_file_records_a_platform_for_every_image():
+    """Without it `docker pull` resolves against the host architecture.
+
+    Every image we publish is a single-platform (linux/amd64) manifest list, so
+    a bare `docker pull <digest>` on an arm64 developer machine fails with
+    "no matching manifest for linux/arm64/v8" -- which reads as a broken or
+    missing image rather than a pull asking for the wrong architecture. This is
+    the first command the readme tells a new developer to run.
+    """
+    lock = json.loads(images_tool.LOCK_PATH.read_text())["images"]
+    assert lock, "images.lock.json has no entries"
+
+    missing = sorted(name for name, entry in lock.items() if not entry.get("platform"))
+    assert not missing, f"no platform recorded for: {', '.join(missing)}"
+
+
+def test_pull_passes_the_locked_platform_to_docker(tmp_path, monkeypatch):
+    """The recorded platform has to reach the command line, not just the file."""
+    lock_path = tmp_path / "images.lock.json"
+    lock_path.write_text(json.dumps({
+        "schema_version": 1,
+        "images": {
+            "demo:tool": {
+                "repository": "dsihartpark/demo",
+                "version": "1.0.0",
+                "platform": "linux/amd64",
+                "digest": "sha256:abc",
+                "ref": "dsihartpark/demo@sha256:abc",
+            }
+        },
+    }))
+    monkeypatch.setattr(images_tool, "LOCK_PATH", lock_path)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(images_tool, "run", lambda cmd: calls.append(list(cmd)))
+
+    images_tool.cmd_pull(argparse.Namespace())
+
+    assert calls == [[
+        "docker", "pull", "--platform", "linux/amd64", "dsihartpark/demo@sha256:abc",
+    ]]
+
+
+def test_pull_defaults_the_platform_for_a_lock_written_before_it_existed(tmp_path, monkeypatch):
+    """An older lock file must still pull, not crash on a missing key."""
+    lock_path = tmp_path / "images.lock.json"
+    lock_path.write_text(json.dumps({
+        "schema_version": 1,
+        "images": {"demo:tool": {"ref": "dsihartpark/demo@sha256:abc"}},
+    }))
+    monkeypatch.setattr(images_tool, "LOCK_PATH", lock_path)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(images_tool, "run", lambda cmd: calls.append(list(cmd)))
+
+    images_tool.cmd_pull(argparse.Namespace())
+
+    assert calls[0][:4] == ["docker", "pull", "--platform", "linux/amd64"]
