@@ -329,12 +329,18 @@ install something on your machine, that is a bug in the command.
 
 ```bash
 git clone <this repo> && cd sequencing
-cp .env.example .env      # defaults to SQLite + local runs/ — no Postgres needed
 
 make images-pull          # ~9 GB, once. All six tool images at their locked digest.
 make check                # contracts and manifests          (~1s)
 make test                 # the whole suite, in a container  (~7s)
 ```
+
+**No `.env` is needed for local work.** The `dev` container deliberately does
+not read one: the test suite points itself at SQLite in a temporary directory,
+and `make smoke` sets `RUNS_ROOT` and `REFS_ROOT` to paths inside the checkout.
+`.env.example` is for deploying to a server — it points `RUNS_ROOT` at
+`/srv/dharini`, which does not exist on your machine. Copy it when you deploy,
+not when you clone.
 
 The custom images are already published to
 [`dsihartpark`](https://hub.docker.com/u/dsihartpark) on Docker Hub, so
@@ -424,12 +430,14 @@ planted   : 25001A>G, 32346T>C, 41001A>G
 So you can tell a working run from a broken one without a reference result to
 diff against. It is seeded — everyone's fixtures are byte-identical.
 
-It writes three files, and these commands run as written:
+It writes three files — `reads.fastq.gz`, `scheme.bed` and `query.fasta` — so
+these run as written:
 
 ```bash
 make smoke INPUT=fixtures/reads.fastq.gz \
   ARGS="--param primer.enabled=true --extra primer_bed=fixtures/scheme.bed"
 
+# amd64 hosts only — see the Apple Silicon note below
 make smoke PIPELINE=snippy-fasta INPUT=fixtures/query.fasta
 ```
 
