@@ -522,24 +522,32 @@ reproduced the failure with no Python in the way.
 
 ### ⚠ Apple Silicon cannot run `snippy-fasta`
 
-The tool images are `linux/amd64`, which is native on a Linux x86-64 machine and
-emulated on an M-series Mac. Most tools survive emulation; the vcflib binaries
-in the Snippy image do not — `vcfstreamsort` and `vcfuniq` die with SIGILL
+`ont-lsdv` runs end to end on both architectures. `snippy-fasta` does not run on
+an M-series Mac at all, and cannot be made to. Both escape routes are closed:
+
+**Emulation fails.** The tool images are `linux/amd64` — native on a Linux
+x86-64 box, emulated on a Mac. Most tools survive that; the vcflib binaries in
+the Snippy image do not. `vcfstreamsort` and `vcfuniq` die with SIGILL
 (exit 132), because the emulator does not implement every instruction they were
-compiled to use.
+compiled to use. Snippy gets as far as `freebayes-parallel` and dies in the pipe
+after it, so bwa, samclip, samtools and freebayes all demonstrably work — it is
+specifically vcflib.
 
-So `snippy-fasta` reaches variant calling on a Mac and dies there. `ont-lsdv`
-runs end to end on both architectures.
+**A native arm64 image is not buildable.** snippy 4.6.0 pins
+`vcflib >=1.0.0_rc3,<=1.0.2` and `tabixpp 1.1.0`, and bioconda publishes no
+`linux-aarch64` build of either, so the environment does not solve. Newer vcflib
+builds for aarch64 exist (1.0.9+) but snippy 4.6.0 will not accept them, and
+changing snippy's version to suit a laptop would mean local results no longer
+match what production computes — the exact thing pinning exists to prevent.
 
-**On Linux there is no emulation and this does not apply.** If you are the first
-person to run this on an x86-64 machine, please run
+**So CI runs it instead.** `.github/workflows/tests.yml` has a `snippy-fasta`
+job on an amd64 runner that executes the pipeline end to end and asserts it
+finds the three planted variants. Exit status alone is not enough there: Snippy
+can complete having called nothing, and a wrong reference or an empty alignment
+both look like success.
 
-```bash
-make smoke PIPELINE=snippy-fasta INPUT=fixtures/query.fasta
-```
-
-and say whether it completes — it is the one check nobody has been able to make.
-It should report the same three planted variants `make fixtures` prints.
+If you are changing `snippy-fasta`, push the branch and read that job. It is the
+only place the pipeline actually runs.
 
 ### How the dev container is wired
 
@@ -733,11 +741,11 @@ the lock whenever a manifest or Dockerfile changes on `main`.
    contigs do not match the reference is now rejected outright. But no run has
    ever used a genuine LSDV amplicon design, because nobody has supplied one.
    Until then, leave `primer.enabled` false.
-3. **`snippy-fasta` has not been run end to end since containerisation.** Its
-   reference-path bug is fixed and it now reaches variant calling, but the
-   vcflib binaries in the Snippy image cannot execute under amd64 emulation on
-   Apple Silicon (SIGILL), so the run cannot be completed on a developer Mac.
-   **Run it once on the amd64 host before trusting it.**
+3. **`snippy-fasta` is only ever exercised on amd64.** Its reference-path bug is
+   fixed, and CI now runs it end to end and asserts the variant count. But no
+   Apple Silicon machine can run it — see the note above — so a developer on a
+   Mac changing that pipeline is relying entirely on CI to tell them whether it
+   works.
 4. **Variant calls have only been checked against synthetic reads.** All three
    ONT callers report exactly the planted substitutions, which proves the
    invocations, the plumbing and the resource limits. It proves nothing about

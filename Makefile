@@ -102,8 +102,8 @@ images-push: dev-image  ## Push every built image to the registry (uses host cre
 images-lock:   ## Resolve digests and write images.lock.json
 	$(DEV) python tools/images.py lock
 
-images-pull:   ## Pull every image at its locked digest
-	$(DEV) python tools/images.py pull
+images-pull:   ## Pull every image at its locked digest (SCOPE= for just one)
+	$(DEV) python tools/images.py pull $(if $(SCOPE),--scope $(SCOPE),)
 
 images-list:   ## The whole image catalogue: every scope, every key, who uses it
 	$(DEV) python tools/images.py list $(if $(SCOPE),--scope $(SCOPE),)

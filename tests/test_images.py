@@ -521,3 +521,38 @@ def test_pull_defaults_the_platform_for_a_lock_written_before_it_existed(tmp_pat
     images_tool.cmd_pull(argparse.Namespace())
 
     assert calls[0][:4] == ["docker", "pull", "--platform", "linux/amd64"]
+
+
+def test_pull_can_be_scoped_to_one_pipeline(tmp_path, monkeypatch):
+    """CI pulls one pipeline's images, not all ~9 GB of them onto a ~14 GB runner."""
+    lock_path = tmp_path / "images.lock.json"
+    lock_path.write_text(json.dumps({
+        "schema_version": 1,
+        "images": {
+            "shared:snippy": {"ref": "r/snippy@sha256:a", "platform": "linux/amd64"},
+            "ont-lsdv:core": {"ref": "r/core@sha256:b", "platform": "linux/amd64"},
+        },
+    }))
+    monkeypatch.setattr(images_tool, "LOCK_PATH", lock_path)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(images_tool, "run", lambda cmd: calls.append(list(cmd)))
+
+    images_tool.cmd_pull(argparse.Namespace(scope="shared"))
+
+    assert [c[-1] for c in calls] == ["r/snippy@sha256:a"]
+
+
+def test_pull_rejects_a_scope_that_matches_nothing(tmp_path, monkeypatch):
+    """A typo'd scope must not silently pull nothing and report success -- the
+    run that follows would then fail on a missing image instead."""
+    lock_path = tmp_path / "images.lock.json"
+    lock_path.write_text(json.dumps({
+        "schema_version": 1,
+        "images": {"shared:snippy": {"ref": "r/snippy@sha256:a"}},
+    }))
+    monkeypatch.setattr(images_tool, "LOCK_PATH", lock_path)
+    monkeypatch.setattr(images_tool, "run", lambda cmd: None)
+
+    with pytest.raises(SystemExit, match="no images in scope"):
+        images_tool.cmd_pull(argparse.Namespace(scope="typo"))

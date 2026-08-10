@@ -357,6 +357,15 @@ def cmd_pull(args) -> None:
     except (OSError, KeyError, ValueError):
         sys.exit(f"{LOCK_PATH} is missing or malformed. Run 'make images-lock' first.")
 
+    # Lock keys are "<scope>:<key>", so a scope filter is a prefix match. CI
+    # jobs that exercise one pipeline pull only what that pipeline needs; the
+    # full set is about 9 GB and a hosted runner has roughly 14 GB of disk.
+    wanted = getattr(args, "scope", None)
+    if wanted:
+        lock = {k: v for k, v in lock.items() if k.split(":", 1)[0] == wanted}
+        if not lock:
+            sys.exit(f"no images in scope {wanted!r}. Run 'make images-list' to see them.")
+
     for name, entry in sorted(lock.items()):
         print(f"\n=== pull {name} ===")
         # Default for locks written before `platform` was recorded.
@@ -374,7 +383,7 @@ def main() -> None:
     ):
         child = sub.add_parser(name)
         child.set_defaults(handler=handler)
-        if name in ("build", "push", "list", "refs"):
+        if name in ("build", "push", "list", "refs", "pull"):
             child.add_argument("--scope", default=None, help="limit to one manifest scope")
         if name == "list":
             child.add_argument("--json", action="store_true", help="machine-readable output")
