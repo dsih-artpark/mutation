@@ -451,16 +451,27 @@ make smoke INPUT=fixtures/reads.fastq.gz \
 make smoke PIPELINE=snippy-fasta INPUT=fixtures/your-assembly.fasta
 ```
 
+`PIPELINE=` chooses which one runs, and defaults to `ont-lsdv`. **The two are
+independent** — separate packages, separate manifests, separate images, and a
+run of one executes none of the other's code. So you can work on, break and fix
+one without touching the other, which is the same property that makes adding a
+third a backend-only change.
+
+The contract tests are parametrised the same way, so a failure names the
+pipeline responsible rather than just the suite:
+
+```text
+tests/test_all_pipelines.py::test_pipeline_satisfies_the_contract[ont-lsdv]
+tests/test_all_pipelines.py::test_pipeline_satisfies_the_contract[snippy-fasta]
+```
+
 `--param` takes dotted keys and JSON values, so `--param threads=8` is a number
 and `--param primer.enabled=true` is a boolean. `--extra key=path` supplies a
 secondary input. `--keep` retains `work/`, which the worker normally purges.
 `--run-id NAME` gives the run a name you choose instead of a timestamp.
 
-Every parameter either pipeline accepts, with its default and its meaning:
-
-```bash
-curl -s localhost:8000/v1/pipelines | jq '.[] | {id, params_schema}'
-```
+`make params PIPELINE=<id>` lists every parameter that pipeline accepts, with
+its type and default. There is no server to start for it.
 
 Output goes to `runs/<run-id>/`:
 
