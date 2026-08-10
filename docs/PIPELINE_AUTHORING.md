@@ -36,7 +36,7 @@ That's it. `app/pipelines/base.py` is the authoritative version.
 ### Why each declaration exists
 
 | Declaration | What the platform does with it |
-|---|---|
+| --- | --- |
 | `params_schema` | Validates submissions in milliseconds (a bad parameter is a `422`, not a job that dies eight minutes in). Dharini renders its form from it. Defaults are applied automatically. |
 | `stages` | Progress reads `4/8 · consensus` from the moment the run is queued, instead of a binary PENDING/SUCCESS. |
 | `accepted_extensions` | Rejects a FASTA sent to a FASTQ pipeline before anything is written to disk. |
@@ -50,7 +50,7 @@ That's it. `app/pipelines/base.py` is the authoritative version.
 Inside `run()` you never write:
 
 | ❌ Never | ✅ Instead |
-|---|---|
+| --- | --- |
 | `subprocess.run(...)` | `ctx.run(spec, argv)` |
 | `docker run ...` | a `StageSpec(image=...)` |
 | a relative path like `"output/x.bam"` | `ctx.work_dir / "x.bam"` |
@@ -386,6 +386,26 @@ Rules that matter:
 
 Four files in one new directory, and nothing outside it changes.
 
+That claim is measured, not asserted. Adding a working pipeline to this
+repository produced:
+
+```text
+files added in app/pipelines/<new>/ : 4
+files changed anywhere else         : 0
+```
+
+and it was immediately picked up by `make images-list`, covered by the contract
+tests as `test_pipeline_satisfies_the_contract[<id>]` with no new test file
+written, and runnable via `make smoke PIPELINE=<id>`. The first `make check`
+failed with
+
+> `<id>: property 'label' has no description. Dharini renders it as the field's
+> help text, so it is user-facing copy, not a code comment.`
+
+which is the intended experience: the platform tells a new author what the
+contract needs and why, rather than accepting it and rendering a blank tooltip
+in production.
+
 `app/pipelines/my_pipeline/manifest.yaml`:
 
 ```yaml
@@ -607,7 +627,7 @@ Real defects found in the first ONT delivery. Worth reading once — they're the
 reason several rules above exist.
 
 | Mistake | Consequence |
-|---|---|
+| --- | --- |
 | `docker run -v $(pwd):/pipeline` | `$(pwd)` is the *caller's* path. Inside a container the daemon can't find it, silently mounts an empty directory, and the tool "can't find" data that exists. |
 | Hardcoded `output/alignment.bam` | Two concurrent runs overwrite each other. Concurrency was impossible by construction. |
 | `sys.exit(1)` on tool failure | Kills the Celery worker rather than failing the task. |

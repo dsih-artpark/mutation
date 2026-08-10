@@ -185,7 +185,7 @@ class RunContext:
     @contextmanager
     def stage(self, name: str):
         """Mark a stage. Records timing, peak memory and outcome."""
-        ordinal = self.declared_stages.index(name) if name in self.declared_stages else -1
+        ordinal = self._ordinal_of(name)
         self._current_stage = name
         self._stage_peak = None
         self._stage_image = None
@@ -215,9 +215,30 @@ class RunContext:
         finally:
             self._current_stage = None
 
+    def _ordinal_of(self, name: str) -> int:
+        """Position of `name` in the declared stage list.
+
+        Undeclared is an error rather than a -1, because a -1 is invisible:
+        `stages` drives the progress denominator a caller polls, so a stage
+        added to run() and forgotten in the list produces "4/7" for a pipeline
+        that runs eight stages, and reports SUCCEEDED having silently skipped a
+        position. The two are written in different places and will drift; this
+        is what stops them.
+        """
+        if not self.declared_stages:
+            return -1
+        try:
+            return self.declared_stages.index(name)
+        except ValueError:
+            raise ValueError(
+                f"stage {name!r} is not in the pipeline's declared stages "
+                f"{self.declared_stages}. Add it to `stages`, in the order it runs."
+            ) from None
+
     def skip(self, name: str, reason: str) -> None:
         """Record a stage as deliberately not run. Keeps the progress denominator
         honest instead of leaving a permanent gap."""
+        self._ordinal_of(name)  # same drift check as stage(); a typo here is silent otherwise
         self.recorder.stage_skipped(name, reason)
         self.stage_log.append({"name": name, "status": "SKIPPED", "detail": reason})
         self.log(f"[skip] {name}: {reason}")

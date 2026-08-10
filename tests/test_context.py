@@ -61,7 +61,7 @@ def ctx(tmp_path):
         paths=paths,
         refs_dir=tmp_path / "refs",
         recorder=_RecordingRecorder(),
-        stages=["one", "two"],
+        stages=["one", "two", "primer"],
         input_name="reads.fastq.gz",
     )
 
@@ -203,3 +203,34 @@ def test_metrics_and_variants_reach_the_result(ctx):
 
     assert ctx.result.metrics["variant_count"] == 12
     assert len(ctx.result.variants) == 1
+
+
+def test_an_undeclared_stage_is_rejected(ctx):
+    """`stages` drives the progress denominator a caller polls, and it is
+    written in a different place from the ctx.stage() calls that must match it.
+    A stage added to run() and forgotten in the list used to score ordinal -1:
+    the run reported "4/7" while executing eight stages, and succeeded having
+    silently skipped a position."""
+    with pytest.raises(ValueError, match="not in the pipeline's declared stages"):
+        with ctx.stage("nowhere"):
+            pass
+
+
+def test_an_undeclared_skip_is_rejected_too(ctx):
+    """Same drift, quieter: a typo'd skip name would otherwise record a stage
+    nobody declared and leave the real one looking like it never ran."""
+    with pytest.raises(ValueError, match="not in the pipeline's declared stages"):
+        ctx.skip("primerr", "typo")
+
+
+def test_a_pipeline_declaring_no_stages_is_left_alone(tmp_path):
+    """The synthetic contexts in this suite, and any pipeline that genuinely
+    wants no progress reporting, must not be forced to declare stages."""
+    paths = RunPaths.for_run(tmp_path / "runs", "run-no-stages").create()
+    bare = RunContext(
+        run_id="run-no-stages", params={}, paths=paths,
+        refs_dir=tmp_path / "refs", recorder=_RecordingRecorder(),
+    )
+    with bare.stage("anything"):
+        pass
+    assert bare.stage_log[0]["name"] == "anything"
