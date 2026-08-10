@@ -87,6 +87,19 @@ def _parse_params(pairs: list[str]) -> dict:
         *parents, leaf = key.split(".")
         for part in parents:
             target = target.setdefault(part, {})
+            # `--param a=1 --param a.b=2` asks for `a` to be both a scalar and
+            # an object. Left alone this is a bare TypeError from dict
+            # subscription, which says nothing about which two flags disagree.
+            if not isinstance(target, dict):
+                raise SystemExit(
+                    f"--param {key}={raw} conflicts with an earlier value for "
+                    f"{part!r}, which was set to a scalar. Drop one of them."
+                )
+        if isinstance(target.get(leaf), dict):
+            raise SystemExit(
+                f"--param {key}={raw} would replace the object already built "
+                f"for {key!r} by an earlier --param. Drop one of them."
+            )
         target[leaf] = value
     return params
 
