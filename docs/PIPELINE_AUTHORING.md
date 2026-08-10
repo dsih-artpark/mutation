@@ -198,7 +198,7 @@ images:
     source: build
     dockerfile: docker/tool/Dockerfile    # relative to this manifest
     context: docker/tool
-    repository: artpark/dharini-my-tool
+    repository: dsihartpark/dharini-my-tool
     version: "1.0.0"                      # never "latest"; parsing rejects it
     platform: linux/amd64
 
