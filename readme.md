@@ -335,6 +335,25 @@ make check                # contracts and manifests          (~1s)
 make test                 # the whole suite, in a container  (~7s)
 ```
 
+**On Linux**, add yourself to the `docker` group once — the dev container talks
+to the daemon through the mounted socket, and without it every target fails with
+*permission denied while trying to connect to the Docker daemon socket*:
+
+```bash
+sudo usermod -aG docker $USER && newgrp docker
+```
+
+That is the whole Linux setup. The `Makefile` reads the socket's group id
+itself, so there is nothing to look up or configure.
+
+Files written by a run are owned by root, because the tool containers run as
+root — that is true on any Linux host and is why `runs/` and `fixtures/` are
+cleaned by a container rather than by you:
+
+```bash
+make clean       # removes runs/* and fixtures/ — no sudo
+```
+
 **No `.env` is needed for local work.** The `dev` container deliberately does
 not read one: the test suite points itself at SQLite in a temporary directory,
 and `make smoke` sets `RUNS_ROOT` and `REFS_ROOT` to paths inside the checkout.
@@ -356,6 +375,45 @@ The custom images are already published to
 Medaka and Clair3 are pulled unmodified from upstream registries.
 
 `make help` lists every target.
+
+### Where everything goes
+
+There is one rule: **the dev container mounts this checkout and nothing else.**
+A path like `~/data/reads.fastq.gz` does not exist inside it. Everything you
+want a pipeline to read has to live under the repository directory.
+
+```text
+sequencing/
+├── fixtures/          ← PUT YOUR INPUT FILES HERE   (git-ignored)
+│     reads.fastq.gz         ONT reads for ont-lsdv
+│     query.fasta            assembled genome for snippy-fasta
+│     scheme.bed             ARTIC primer scheme, if you use trimming
+│
+├── data/              ← reference genome + annotation  (REFS_ROOT locally)
+│     lsdv_reference_sequence.fasta
+│     lsdv_reference_sequence.gff3
+│
+└── runs/              ← OUTPUT LANDS HERE            (git-ignored)
+      <run-id>/input/    your file, under a normalised name
+      <run-id>/work/     scratch, deleted unless you pass --keep
+      <run-id>/output/   the results: VCFs, consensus, QC report
+      <run-id>/logs/     one log per stage
+```
+
+**There is no config file to edit.** Parameters are passed on the command line
+and validated against the pipeline's JSON Schema, which is also what Dharini
+renders its form from — so there is one definition, not a file that drifts from
+it. To see every parameter, its type and its default:
+
+```bash
+make params                          # ont-lsdv
+make params PIPELINE=snippy-fasta
+```
+
+To use a different reference genome, drop it in `data/` and pass its filename:
+`--param reference=my_reference.fasta`. It is a filename, not a path — it is
+resolved inside the references directory so a pipeline cannot read arbitrary
+files off the host.
 
 ### Run a pipeline on your own file
 
@@ -451,14 +509,26 @@ The full log is at `runs/<run-id>/logs/NN_<stage>.log`, and **its first line is
 the exact `docker run` command**. Copy that line, run it yourself, and you have
 reproduced the failure with no Python in the way.
 
-### ⚠ One thing you cannot test on an Apple Silicon Mac
+### ⚠ Apple Silicon cannot run `snippy-fasta`
 
-The tool images are `linux/amd64`. Most run fine under emulation, but binaries
-compiled with SSE instructions do not: `vcfstreamsort` and `vcfuniq` inside the
-Snippy image die with SIGILL (exit 132). **`snippy-fasta` therefore cannot
-complete on an M-series Mac** — it reaches variant calling and dies there. Not a
-code defect, and there is no workaround short of an amd64 host. `ont-lsdv` runs
-end to end fine on both architectures.
+The tool images are `linux/amd64`, which is native on a Linux x86-64 machine and
+emulated on an M-series Mac. Most tools survive emulation; the vcflib binaries
+in the Snippy image do not — `vcfstreamsort` and `vcfuniq` die with SIGILL
+(exit 132), because the emulator does not implement every instruction they were
+compiled to use.
+
+So `snippy-fasta` reaches variant calling on a Mac and dies there. `ont-lsdv`
+runs end to end on both architectures.
+
+**On Linux there is no emulation and this does not apply.** If you are the first
+person to run this on an x86-64 machine, please run
+
+```bash
+make smoke PIPELINE=snippy-fasta INPUT=fixtures/query.fasta
+```
+
+and say whether it completes — it is the one check nobody has been able to make.
+It should report the same three planted variants `make fixtures` prints.
 
 ### How the dev container is wired
 

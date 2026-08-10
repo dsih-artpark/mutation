@@ -25,6 +25,18 @@ export DHARINI_REPO := $(CURDIR)
 DEV_ARCH := $(patsubst aarch64,arm64,$(patsubst x86_64,amd64,$(shell uname -m)))
 export DHARINI_DEV_PLATFORM := linux/$(DEV_ARCH)
 
+# The group that owns the Docker socket. On Linux the dev container has to join
+# it or it cannot use the mounted socket, and every target fails with
+# "permission denied while trying to connect to the Docker daemon socket".
+# Derived rather than configured: docker-compose.yml's fallback of 999 is a
+# guess that is wrong on plenty of distributions, and asking each developer to
+# look it up is a step they will skip. -L because /var/run/docker.sock is a
+# symlink on macOS. GNU stat first, BSD second.
+DOCKER_GID ?= $(shell stat -Lc '%g' /var/run/docker.sock 2>/dev/null \
+                   || stat -Lf '%g' /var/run/docker.sock 2>/dev/null \
+                   || echo 999)
+export DOCKER_GID
+
 COMPOSE := docker compose
 
 # --build: rebuilds the dev image when the Dockerfile or requirements-dev.txt
@@ -50,7 +62,7 @@ DEV_QUIET := $(COMPOSE) run --rm --no-deps -T dev
 BASETEMP := --basetemp=$(CURDIR)/runs/.pytest-tmp
 
 .PHONY: help dev-image images-build images-push images-lock images-pull images-list \
-        test test-fast check shell fixtures smoke
+        test test-fast check shell fixtures smoke clean params
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/'
@@ -73,6 +85,7 @@ images-build:  ## Build every image declared with source: build
 # file holds no secret to mount. So this uses the host CLI, which is already the
 # prerequisite for every other target. In CI, docker/login-action writes real
 # credentials into the runner's config and this works unchanged.
+#
 # Depends on dev-image, and then runs WITHOUT --build: `docker compose run
 # --build` writes buildx progress to stdout, which would be captured as if it
 # were part of the reference list. Building first keeps this command's stdout to
@@ -105,6 +118,10 @@ test-fast:     ## Skip anything that needs Docker
 check:         ## Contract and manifest validation only
 	$(DEV) python -m pytest tests/test_all_pipelines.py tests/test_manifest.py tests/test_images.py -q
 
+params:        ## Every parameter a pipeline accepts, with types and defaults (PIPELINE=)
+	@$(DEV_QUIET) python -c "import json; from app.pipelines import registry; \
+	  print(json.dumps(registry.get('$(or $(PIPELINE),ont-lsdv)').params_schema, indent=2))"
+
 fixtures:      ## Synthesise deterministic pipeline inputs into fixtures/
 	$(DEV) python tools/make_fixtures.py
 
@@ -119,6 +136,23 @@ smoke:         ## End-to-end run on generated fixtures (PIPELINE=, INPUT=, ARGS=
 	$(DEV) env RUNS_ROOT=$(CURDIR)/runs REFS_ROOT=$(CURDIR)/data \
 	  python tools/run_local.py $(or $(PIPELINE),ont-lsdv) \
 	    $(or $(INPUT),fixtures/reads.fastq.gz) $(ARGS)
+
+# Deletes from inside a container, on purpose. Tool containers run as root and
+# write the run directory, so on Linux the results are root-owned in the
+# developer's own checkout and `rm -rf runs/x` fails with permission denied.
+# The container can remove what containers created; the alternative is telling
+# people to sudo rm -rf inside their working tree, which is worse advice.
+#
+# Prints what it is about to remove. `runs/` holds completed results, not only
+# scratch, and a target that empties it in silence is one a developer runs once
+# and regrets.
+clean: dev-image  ## Remove generated runs/ and fixtures/ (no sudo needed)
+	@$(DEV_QUIET) bash -c 'shopt -s nullglob; \
+	  targets=(); \
+	  for t in runs/* fixtures; do [ -e "$$t" ] && targets+=("$$t"); done; \
+	  if [ $${#targets[@]} -eq 0 ]; then echo "nothing to remove"; exit 0; fi; \
+	  printf "removing:\n"; printf "  %s\n" "$${targets[@]}"; \
+	  rm -rf "$${targets[@]}"'
 
 shell:         ## Interactive shell in the dev container
 	$(DEV) bash
