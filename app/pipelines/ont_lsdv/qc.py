@@ -36,7 +36,13 @@ def _nanoplot(ctx: RunContext, fastq: Path) -> Path:
 
     ctx.run(
         specs.NANOPLOT,
-        ["NanoPlot", "--fastq", str(fastq), "--outdir", str(outdir), "-t", str(_threads(ctx, 2))],
+        [
+            "NanoPlot",
+            "--fastq", str(fastq),
+            "--outdir", str(outdir),
+            "-t", str(_threads(ctx, 2)),
+            "--downsample", "10000",
+        ],
     )
 
     stats = outdir / "NanoStats.txt"
