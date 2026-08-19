@@ -15,7 +15,8 @@ import hmac
 from dataclasses import dataclass
 
 import jwt
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import (
     ALLOW_UNAUTHENTICATED,
@@ -29,6 +30,14 @@ from .config import (
 )
 
 API_KEY_HEADER = "X-API-Key"
+
+# Declared as security schemes rather than read straight off the request, so
+# they appear in the OpenAPI document. Dharini generates its client from that
+# document: undeclared auth produces a client that sends no credential and 401s
+# on every call, and a /docs page with no way to authorise. auto_error=False
+# because this module decides what a missing credential means, not the scheme.
+_api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+_bearer_scheme = HTTPBearer(auto_error=False, description="Dharini session token")
 
 # Seconds to wait on the JWKS endpoint. Deliberately short: this is in the path
 # of every browser request, and failing fast beats holding a worker.
@@ -138,24 +147,24 @@ def verify_bearer(token: str) -> Principal:
 # FastAPI dependencies
 # --------------------------------------------------------------------------
 
-def require_principal(request: Request) -> Principal:
+def require_principal(
+    api_key: str | None = Depends(_api_key_scheme),
+    bearer: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> Principal:
     """Any valid credential. 401 otherwise.
 
     The failure carries no detail: distinguishing "unknown key" from "expired
     token" tells an attacker which half of the system to keep probing.
     """
-    presented = request.headers.get(API_KEY_HEADER)
-    if presented:
-        principal = verify_api_key(presented)
+    if api_key:
+        principal = verify_api_key(api_key)
         if principal:
             return principal
         raise HTTPException(401, "invalid credential")
 
-    authorization = request.headers.get("Authorization", "")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() == "bearer" and token:
+    if bearer and bearer.credentials:
         try:
-            return verify_bearer(token)
+            return verify_bearer(bearer.credentials)
         except AuthError:
             raise HTTPException(401, "invalid credential") from None
 

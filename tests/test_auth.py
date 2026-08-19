@@ -259,31 +259,37 @@ def test_a_non_ascii_api_key_is_401_not_500(raw):
     """Regression: hmac.compare_digest refuses two str arguments unless both
     are ASCII, and Starlette decodes header bytes as latin-1. Comparing as str
     raised TypeError out of an unauthenticated code path, so any client could
-    force a 500 with one header byte.
+    force a 500 with one header byte and no credentials.
+
+    Driven through the header value exactly as Starlette would decode it. An
+    httpx TestClient refuses to SEND a non-ASCII header, so going through the
+    client would silently test nothing.
     """
     from fastapi import HTTPException
-    from starlette.requests import Request
 
-    from app.auth import require_principal
+    from app.auth import require_principal, verify_api_key
 
-    request = Request({"type": "http", "headers": [(b"x-api-key", raw)]})
+    decoded = raw.decode("latin-1")
+
+    # The function that actually does the comparison must not raise.
+    assert verify_api_key(decoded) is None
+
     with pytest.raises(HTTPException) as caught:
-        require_principal(request)
+        require_principal(api_key=decoded, bearer=None)
     assert caught.value.status_code == 401
 
 
 def test_a_non_ascii_bearer_token_is_401_not_500():
     from fastapi import HTTPException
-    from starlette.requests import Request
+    from fastapi.security import HTTPAuthorizationCredentials
 
     from app.auth import require_principal
 
-    request = Request({
-        "type": "http",
-        "headers": [(b"authorization", b"Bearer caf\xe9.\xff\xfe.sig")],
-    })
+    credentials = HTTPAuthorizationCredentials(
+        scheme="Bearer", credentials=b"caf\xe9.\xff\xfe.sig".decode("latin-1")
+    )
     with pytest.raises(HTTPException) as caught:
-        require_principal(request)
+        require_principal(api_key=None, bearer=credentials)
     assert caught.value.status_code == 401
 
 
@@ -294,3 +300,27 @@ def test_the_jwks_client_is_given_a_timeout():
     from app.auth import JWKS_TIMEOUT_S
 
     assert 0 < JWKS_TIMEOUT_S <= 10
+
+
+# ------------------------------------------------------------ OpenAPI schema
+
+def test_the_openapi_document_declares_both_credentials():
+    """Dharini generates its client from this document. Auth that is enforced
+    but not declared produces a client that sends no credential and 401s on
+    every call, and a /docs page with no way to authorise."""
+    import app.main
+
+    schemes = app.main.app.openapi()["components"]["securitySchemes"]
+    assert schemes["APIKeyHeader"]["name"] == "X-API-Key"
+    assert schemes["HTTPBearer"]["scheme"] == "bearer"
+
+
+def test_protected_routes_declare_security_and_health_does_not():
+    import app.main
+
+    paths = app.main.app.openapi()["paths"]
+    assert paths["/v1/runs"]["post"]["security"]
+    assert paths["/v1/runs/{run_id}"]["get"]["security"]
+    assert paths["/v1/queue"]["get"]["security"]
+    # The load balancer has no credential.
+    assert "security" not in paths["/health"]["get"]
