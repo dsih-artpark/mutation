@@ -43,6 +43,15 @@ os.environ.setdefault("PUBLIC_BASE_URL", "http://testserver")
 os.environ.setdefault("WEBHOOK_SECRET", "test-secret")
 os.environ.setdefault("STATS_SAMPLE_INTERVAL_S", "0")
 
+# The suite exercises the storage seam, not S3. LocalStore keeps it offline
+# and dependency-free -- no moto, no MinIO, no credentials.
+os.environ.setdefault("STORAGE_BACKEND", "local")
+os.environ.setdefault("LOCAL_STORAGE_ROOT", os.path.join(_TMP, "objects"))
+os.environ.setdefault("API_KEYS", "test:test-key")
+os.environ.setdefault("DHARINI_JWT_SECRET", "test-jwt-secret")
+os.environ.setdefault("DHARINI_JWT_ISS", "dharini-test")
+os.environ.setdefault("DHARINI_JWT_AUD", "pipeline-test")
+
 # The shared LSDV reference and GFF3 ship with `sha256: ""` because the tool
 # that computes and writes those digests is a later phase (spec §5.1). Without
 # this the asset contract fails the whole suite over work nobody has been asked

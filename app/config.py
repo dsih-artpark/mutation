@@ -155,10 +155,128 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("
 # Retention
 # --------------------------------------------------------------------------
 
-RETENTION_HOURS = int(os.getenv("RETENTION_HOURS", "72"))
+# Artifacts are on S3 once `publish` succeeds, so local disk is scratch. Six
+# hours is enough to debug a run by hand; S3 lifecycle rules own the long term.
+# A run whose artifacts have NOT reached S3 is never purged -- see tasks.py.
+RETENTION_HOURS = int(os.getenv("RETENTION_HOURS", "6"))
+
+# --------------------------------------------------------------------------
+# Object storage
+# --------------------------------------------------------------------------
+
+STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "s3").strip().lower()
+if STORAGE_BACKEND not in ("s3", "local"):
+    raise RuntimeError(f"STORAGE_BACKEND must be 's3' or 'local', got {STORAGE_BACKEND!r}")
+
+S3_BUCKET = os.getenv("S3_BUCKET", "").strip()
+S3_REGION = os.getenv("S3_REGION", "").strip()
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "").strip()
+
+if STORAGE_BACKEND == "s3" and not S3_BUCKET:
+    raise RuntimeError("STORAGE_BACKEND=s3 requires S3_BUCKET to be set.")
+
+
+def _prefix(name: str, default: str) -> str:
+    """Normalise a key prefix to end with '/'.
+
+    Without the trailing slash, a `startswith` check on 'uploads' also accepts
+    'uploadsX/anything' -- which is a different, attacker-chosen namespace.
+    """
+    value = os.getenv(name, default).strip().lstrip("/")
+    return value if value.endswith("/") else value + "/"
+
+
+S3_ALLOWED_PREFIX = _prefix("S3_ALLOWED_PREFIX", "uploads/")
+S3_OUTPUT_PREFIX = _prefix("S3_OUTPUT_PREFIX", "runs/")
+
+S3_SSE = os.getenv("S3_SSE", "AES256").strip()
+S3_KMS_KEY_ID = os.getenv("S3_KMS_KEY_ID", "").strip()
+if S3_SSE == "aws:kms" and not S3_KMS_KEY_ID:
+    raise RuntimeError("S3_SSE=aws:kms requires S3_KMS_KEY_ID.")
+
+LOCAL_STORAGE_ROOT = Path(
+    os.getenv("LOCAL_STORAGE_ROOT", str(RUNS_ROOT / "_objects"))
+).resolve()
+
+# Replaces MAX_UPLOAD_SIZE. The service no longer accepts an upload; this is
+# the ceiling on an object it is willing to fetch.
+MAX_INPUT_BYTES = int(os.getenv("MAX_INPUT_BYTES", os.getenv("MAX_UPLOAD_SIZE", str(5 * 1024**3))))
+
+S3_UPLOAD_MAX_ATTEMPTS = int(os.getenv("S3_UPLOAD_MAX_ATTEMPTS", "6"))
+
+# Same shape and reasoning as WEBHOOK_BACKOFF_S: index = attempt - 1, spanning
+# roughly nine hours so an S3 outage costs a delay rather than the results.
+S3_UPLOAD_BACKOFF_S = [10, 60, 300, 1800, 7200, 21600]
+
+# --------------------------------------------------------------------------
+# Authentication
+# --------------------------------------------------------------------------
+
+ALLOW_UNAUTHENTICATED = os.getenv("ALLOW_UNAUTHENTICATED", "false").lower() in (
+    "1", "true", "yes",
+)
+
+
+def _parse_api_keys(raw: str) -> dict[str, str]:
+    """`label:secret,label:secret` -> {label: secret}.
+
+    Labels exist so a request log names the caller, and so a key can be rotated
+    by adding the new one, deploying, migrating callers, then removing the old.
+    """
+    keys: dict[str, str] = {}
+    for pair in (p.strip() for p in raw.split(",") if p.strip()):
+        label, sep, secret = pair.partition(":")
+        if not sep or not label.strip() or not secret.strip():
+            raise RuntimeError(
+                f"API_KEYS entry {pair!r} is not in label:secret form. Without a "
+                f"label there is no way to say which caller a request came from."
+            )
+        keys[label.strip()] = secret.strip()
+    return keys
+
+
+API_KEYS = _parse_api_keys(os.getenv("API_KEYS", ""))
+
+# An unauthenticated service must be chosen, never reached by forgetting to set
+# something -- the same reasoning as REQUIRE_PINNED_IMAGES above.
+if not API_KEYS and not ALLOW_UNAUTHENTICATED:
+    raise RuntimeError(
+        "API_KEYS is empty and ALLOW_UNAUTHENTICATED is not set. Every /v1 route "
+        "would be open to anyone who can reach this port. Set API_KEYS in "
+        "production, or ALLOW_UNAUTHENTICATED=true for local development."
+    )
+
+DHARINI_JWT_JWKS_URL = os.getenv("DHARINI_JWT_JWKS_URL", "").strip()
+DHARINI_JWT_SECRET = os.getenv("DHARINI_JWT_SECRET", "").strip()
+DHARINI_JWT_ISS = os.getenv("DHARINI_JWT_ISS", "").strip()
+DHARINI_JWT_AUD = os.getenv("DHARINI_JWT_AUD", "").strip()
+DHARINI_JWT_LEEWAY_S = int(os.getenv("DHARINI_JWT_LEEWAY_S", "30"))
+
+# Bearer auth is off unless a verification key is configured. A half-configured
+# verifier that falls through to accepting unsigned tokens is worse than no
+# browser access at all.
+BEARER_AUTH_ENABLED = bool(DHARINI_JWT_JWKS_URL or DHARINI_JWT_SECRET)
+if BEARER_AUTH_ENABLED and not (DHARINI_JWT_ISS and DHARINI_JWT_AUD):
+    raise RuntimeError(
+        "Bearer auth needs DHARINI_JWT_ISS and DHARINI_JWT_AUD. Without them a "
+        "token minted by any issuer for any audience would be accepted."
+    )
+
+CORS_ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
+
+# --------------------------------------------------------------------------
+# Progress reporting
+# --------------------------------------------------------------------------
+
+HEARTBEAT_INTERVAL_S = int(os.getenv("HEARTBEAT_INTERVAL_S", "10"))
+ETA_HISTORY_RUNS = int(os.getenv("ETA_HISTORY_RUNS", "50"))
+ETA_CACHE_TTL_S = int(os.getenv("ETA_CACHE_TTL_S", "60"))
 
 # --------------------------------------------------------------------------
 # Upload limits
 # --------------------------------------------------------------------------
 
-MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_SIZE", str(5 * 1024**3)))
+# Task 12 removes this alias once app/api/runs.py moves off it.
+MAX_UPLOAD_BYTES = MAX_INPUT_BYTES
