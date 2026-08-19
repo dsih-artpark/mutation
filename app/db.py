@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-from .config import DATABASE_URL
+from .config import BASE_DIR, DATABASE_URL
 
 
 class Base(DeclarativeBase):
@@ -64,7 +64,27 @@ def get_session():
 
 
 def init_db():
-    """Create tables. Adequate for this schema; swap for Alembic if it grows."""
-    from . import models  # noqa: F401  (registers mappers)
+    """Bring the schema to head.
 
-    Base.metadata.create_all(bind=engine)
+    Was `create_all`, which creates missing tables but never alters an existing
+    one -- so a new column appeared on a fresh database and silently did not on
+    a deployed one, and every query touching it failed at runtime with no
+    migration to point at.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    config = Config(str(BASE_DIR / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", DATABASE_URL)
+    # The application owns its logging; alembic.ini's section is for the CLI.
+    config.attributes["configure_logger"] = False
+    command.upgrade(config, "head")
+
+
+def current_revision() -> str | None:
+    """The revision this database is on. Surfaced by /health, because "the
+    migration did not run" and "the code is old" look identical from outside."""
+    from alembic.migration import MigrationContext
+
+    with engine.connect() as connection:
+        return MigrationContext.configure(connection).get_current_revision()

@@ -156,3 +156,18 @@ clean: dev-image  ## Remove generated runs/ and fixtures/ (no sudo needed)
 
 shell:         ## Interactive shell in the dev container
 	$(DEV) bash
+
+# --- Database migrations ---------------------------------------------------
+# init_db() runs `upgrade head` at API startup, so these are for the operator
+# doing it deliberately: generating a revision, or recording the baseline on a
+# database that already has the tables.
+
+.PHONY: migrate migration stamp
+migrate:  ## Bring the database to head
+	docker compose run --rm dev alembic upgrade head
+
+migration:  ## Generate a revision: make migration m="add x"
+	docker compose run --rm dev alembic revision --autogenerate -m "$(m)"
+
+stamp:  ## Record head WITHOUT running DDL. Run once on a pre-existing database.
+	docker compose run --rm dev alembic stamp head
