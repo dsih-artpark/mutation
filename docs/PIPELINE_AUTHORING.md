@@ -13,7 +13,7 @@ JSON Schema you declare.
 
 ## 1. The contract
 
-Every pipeline declares three things and implements one method.
+Every pipeline declares four things and implements one method.
 
 ```python
 class Pipeline:
@@ -23,10 +23,12 @@ class Pipeline:
     description: str
 
     accepted_extensions: tuple[str, ...]
-    input_filename: str     # uploads are normalised to this name
+    input_filename: str     # the fetched input is saved locally under this name
 
     params_schema: dict     # JSON Schema
     stages: list[str]       # declared up front, drives progress reporting
+
+    extra_inputs: dict[str, ExtraInput] = {}   # secondary files, e.g. a primer BED
 
     def run(self, ctx: RunContext) -> RunResult: ...
 ```
@@ -38,10 +40,81 @@ That's it. `app/pipelines/base.py` is the authoritative version.
 | Declaration | What the platform does with it |
 | --- | --- |
 | `params_schema` | Validates submissions in milliseconds (a bad parameter is a `422`, not a job that dies eight minutes in). Dharini renders its form from it. Defaults are applied automatically. |
-| `stages` | Progress reads `4/8 · consensus` from the moment the run is queued, instead of a binary PENDING/SUCCESS. |
-| `accepted_extensions` | Rejects a FASTA sent to a FASTQ pipeline before anything is written to disk. |
-| `input_filename` | The upload is stored under this name. Client filenames contain spaces, unicode and shell metacharacters, and must never reach a tool command line. |
+| `stages` | Progress reads `4/8 · consensus` from the moment the run is queued, instead of a binary PENDING/SUCCESS. The platform prepends `fetch` and appends `publish` to whatever you declare here — see below. |
+| `accepted_extensions` | Rejects a FASTA sent to a FASTQ pipeline before anything is queued. |
+| `input_filename` | The primary input is saved locally under this name once `fetch` pulls it from object storage. Client-controlled names contain spaces, unicode and shell metacharacters, and must never reach a tool command line. |
+| `extra_inputs` | Declares any secondary files your pipeline needs beyond the primary input — see [below](#extra_inputs-secondary-files). |
 | `version` | Lets a result from six months ago be traced to the code that produced it. Bump it whenever behaviour changes. |
+
+### `fetch` and `publish` are reserved, and not yours to write
+
+Every submission names an object already sitting in S3 (`input_key`, plus one
+key per declared `extra_inputs` entry); every run's outputs end up back in
+S3. The platform handles both ends by adding two stages around whatever you
+declare in `stages`:
+
+```
+["fetch", *your_stages, "publish"]
+```
+
+`fetch` downloads the input (and every extra input) before your `run(ctx)` is
+even called; `publish` uploads whatever you gave to `ctx.artifact()` after it
+returns. **`fetch` and `publish` are reserved stage names** — declaring
+either one yourself in `stages` is a contract violation the test suite
+catches (`tests/contract.py`), because the platform is already going to use
+it for something else.
+
+The consequence for you as an author: **your pipeline never sees an object
+key, a bucket name, or `boto3`.** `ctx.input_path`, `ctx.extra_input(key)`
+and `ctx.artifact()` (§3 and §7 below) are the entire interface, and they
+are unchanged whether the file underneath came from S3, from MinIO in a test,
+or was copied straight into the run directory by `tools/run_local.py`.
+`app/storage.py` is the only module in the whole repository that imports
+`boto3` — if you find yourself wanting to import it in a pipeline package,
+that is a sign the platform should be doing the work instead.
+
+### `extra_inputs`: secondary files
+
+Some pipelines need more than one input — `ont-lsdv` accepts an optional
+ARTIC primer scheme alongside the FASTQ. Declare each one as an `ExtraInput`,
+keyed by the name a submission and `ctx.extra_input()` will both use:
+
+```python
+from app.pipelines.base import ExtraInput
+
+extra_inputs = {
+    "primer_bed": ExtraInput(
+        filename="primers.bed",         # normalised on-disk name — never the
+                                         # client's own filename
+        extensions=(".bed",),
+        required=False,
+        title="ARTIC primer scheme",
+        description=(
+            "Required only when primer trimming is enabled. Contig names and "
+            "coordinates must match the reference exactly."
+        ),
+    ),
+}
+```
+
+| Field | Purpose |
+| --- | --- |
+| `filename` | The normalised on-disk name, exactly like `Pipeline.input_filename` — a client-controlled name never reaches a tool command line. |
+| `extensions` | Checked the same way `accepted_extensions` is checked for the primary input. |
+| `required` | Enforced by the API before a run is even queued: a submission missing a required extra, or naming one your pipeline never declared, is a `422`. |
+| `title` / `description` | User-facing copy. Dharini renders the extra-file picker from `describe()` exactly as it renders the parameter form from `params_schema` — these are not code comments. |
+
+A submission supplies one object key per entry, under `extra_input_keys`:
+
+```jsonc
+{ "pipeline_id": "ont-lsdv", "input_key": "uploads/u17/2f8c/reads.fastq.gz",
+  "extra_input_keys": { "primer_bed": "uploads/u17/2f8c/scheme.bed" }, … }
+```
+
+`fetch` downloads it before your pipeline runs, and `ctx.extra_input("primer_bed")`
+returns its local path (or `None` when it was optional and not supplied) —
+see §3. You never see `uploads/u17/2f8c/scheme.bed` yourself; by the time
+`run(ctx)` is called it is already a file on disk with the name you declared.
 
 ---
 
@@ -59,7 +132,9 @@ Inside `run()` you never write:
 These aren't style preferences. Each one is a bug the platform has already had:
 
 - **`subprocess` with `shell=True`** interpolating a filename is remote code
-  execution, because the filename comes from an upload.
+  execution, because the filename is client-controlled — it comes from
+  `input_filename` in the submission body, or from an object key someone
+  else's system chose.
 - **`docker run` built by hand** breaks the moment the caller is itself inside a
   container, because the Docker daemon resolves bind mounts against the *host*.
 - **Relative paths** mean two concurrent runs write to the same file and corrupt
@@ -77,9 +152,9 @@ These aren't style preferences. Each one is a bug the platform has already had:
 ctx.params                       # validated, defaults applied
 ctx.param("variant.tool", "bcftools")   # nested lookup with fallback
 
-ctx.input_path                   # the uploaded file (normalised name)
-ctx.extra_input("primer_bed")    # optional secondary upload, or None
-ctx.input_dir                    # uploads
+ctx.input_path                   # the input `fetch` downloaded (normalised name)
+ctx.extra_input("primer_bed")    # optional secondary input, or None
+ctx.input_dir                    # where fetch put everything
 ctx.work_dir                     # scratch — DELETED when the run ends
 ctx.output_dir                   # published artifacts — retained
 ctx.refs_dir                     # shared references, read-only
@@ -464,7 +539,7 @@ class MyPipeline(Pipeline):
 
     def run(self, ctx: RunContext) -> RunResult:
         with ctx.stage("prepare"):
-            ctx.require(ctx.input_path, hint="uploaded FASTQ is missing")
+            ctx.require(ctx.input_path, hint="input FASTQ is missing")
 
         with ctx.stage("analyse"):
             output = ctx.work_dir / "results.tsv"
@@ -593,7 +668,10 @@ Before opening a PR:
 - [ ] `params_schema` has `additionalProperties: False` at every level
 - [ ] Every optional parameter has a `default`
 - [ ] `title` and `description` are written for a user, not a developer
-- [ ] `stages` matches the `ctx.stage(...)` names exactly
+- [ ] `stages` matches the `ctx.stage(...)` names exactly, and declares
+      neither `fetch` nor `publish` — both are reserved for the platform
+- [ ] Every declared `extra_inputs` key has a real `ExtraInput.filename`, and
+      `ctx.extra_input(key)` is checked for `None` unless `required=True`
 - [ ] Every `ctx.run()` is followed by `ctx.require()` on its output
 - [ ] No `subprocess`, no `docker`, no relative paths, no `sys.exit`
 - [ ] Any `sh()` script is a literal constant with data passed via `env`
