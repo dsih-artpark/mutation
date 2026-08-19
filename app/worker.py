@@ -36,4 +36,11 @@ celery.conf.beat_schedule = {
         "task": "app.tasks.sweep_pending_deliveries",
         "schedule": 300.0,
     },
+    # The same backstop for artifact uploads. A run whose upload retry message
+    # was lost is a SUCCEEDED run whose results never left the box, and nothing
+    # else would ever notice.
+    "sweep-pending-uploads": {
+        "task": "app.tasks.sweep_pending_uploads",
+        "schedule": 300.0,
+    },
 }

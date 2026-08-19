@@ -359,3 +359,34 @@ async def _save_upload(upload: UploadFile, destination: Path) -> int:
             out.write(chunk)
 
     return written
+
+
+@router.post("/{run_id}/reupload", status_code=202, dependencies=[Depends(require_service)])
+def reupload(run_id: str, session: Session = Depends(get_session)):
+    """Re-run artifact publication.
+
+    The manual recovery path for the case retries are worst at: an outage
+    longer than the roughly nine-hour schedule. Service-only for the same
+    reason as redeliver -- this is Dharini's server acting, not a browser
+    reading.
+    """
+    run = session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(404, f"unknown run: {run_id}")
+    if not run.is_terminal:
+        raise HTTPException(409, f"run is {run.status.value}; nothing to publish yet")
+    if run.artifacts_uploaded:
+        return {"run_id": run.id, "status": "already_uploaded"}
+
+    # Reset the counter: an operator asking for this has fixed whatever caused
+    # the exhaustion, and should get the full retry schedule again rather than
+    # one attempt against a spent budget.
+    run.upload_attempts = 0
+    run.upload_error = None
+    run.next_upload_attempt_at = utcnow()
+    session.commit()
+
+    from ..tasks import upload_run_artifacts
+
+    upload_run_artifacts.apply_async(args=[run.id])
+    return {"run_id": run.id, "status": "queued"}

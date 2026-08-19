@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from .config import (
     MAX_INPUT_BYTES,
     REFS_ROOT,
+    S3_UPLOAD_BACKOFF_S,
+    S3_UPLOAD_MAX_ATTEMPTS,
     RETENTION_HOURS,
     RUNS_ROOT,
     WEBHOOK_BACKOFF_S,
@@ -16,7 +18,7 @@ from .config import (
 )
 from .db import session_scope
 from .delivery import build_payload, post
-from .storage import StorageError, get_store
+from .storage import StorageError, bucket_name, get_store, output_key
 from .models import (
     DeliveryStatus,
     Run,
@@ -173,7 +175,11 @@ def execute_run(self, run_id: str) -> dict:
         run = session.get(Run, run_id)
         status = run.status.value if run else "UNKNOWN"
 
-    _enqueue_delivery(run_id)
+    # Publish, not notify. The webhook payload carries object keys, so a
+    # delivery sent before the objects exist hands the consumer keys that 404.
+    # Called unconditionally: a failed run has no artifacts, and publish then
+    # writes its manifest and enqueues the delivery immediately.
+    upload_run_artifacts.apply_async(args=[run_id])
     return {"run_id": run_id, "status": status}
 
 
@@ -280,6 +286,154 @@ def _purge_work_dir(paths: RunPaths) -> None:
         shutil.rmtree(paths.work, ignore_errors=True)
     except OSError as exc:
         print(f"could not remove work dir {paths.work}: {exc}", flush=True)
+
+
+# ==========================================================================
+# Artifact publication
+# ==========================================================================
+
+@celery.task(name="app.tasks.upload_run_artifacts", bind=True, acks_late=True)
+def upload_run_artifacts(self, run_id: str) -> dict:
+    """Publish this run's artifacts to object storage, then notify.
+
+    Deliberately outside execute_run's failure path. A run that computed
+    correctly but whose artifacts could not be uploaded is a SUCCEEDED run with
+    artifacts_uploaded False -- the same rule WebhookDelivery already follows,
+    for the same reason: discarding twenty minutes of Clair3 because S3 blipped
+    is the expensive mistake, not the cheap one.
+    """
+    store = get_store()
+
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            return {"run_id": run_id, "status": "unknown_run"}
+        if run.artifacts_uploaded:
+            return {"run_id": run_id, "status": "already_uploaded"}
+        pending = [(a.id, a.filename, a.content_type)
+                   for a in run.artifacts if a.uploaded_at is None]
+        attempts = run.upload_attempts or 0
+
+    paths = RunPaths.for_run(RUNS_ROOT, run_id)
+    uploaded: list[tuple[int, str]] = []
+    failure: str | None = None
+
+    for artifact_id, filename, content_type in pending:
+        key = output_key(run_id, filename)
+        try:
+            store.upload(paths.output / filename, key, content_type)
+        except (StorageError, OSError) as exc:
+            failure = f"{filename}: {exc}"
+            break
+        uploaded.append((artifact_id, key))
+
+    # Stamped per artifact, so a retry after four of five landed moves one file
+    # rather than five. A 3 GB BAM is not re-sent because a 40 kB VCF failed.
+    if uploaded:
+        with session_scope() as session:
+            for artifact_id, key in uploaded:
+                artifact = session.get(RunArtifact, artifact_id)
+                if artifact:
+                    artifact.s3_key = key
+                    artifact.uploaded_at = utcnow()
+
+    if failure is None:
+        failure = _write_run_manifest(run_id, store)
+
+    countdown: int | None = None
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            return {"run_id": run_id, "status": "vanished"}
+
+        run.output_bucket = bucket_name()
+        run.upload_attempts = attempts + 1
+
+        if failure is None:
+            run.artifacts_uploaded = True
+            run.upload_error = None
+            run.next_upload_attempt_at = None
+        else:
+            run.upload_error = failure[:8000]
+            if run.upload_attempts >= S3_UPLOAD_MAX_ATTEMPTS:
+                run.next_upload_attempt_at = None
+            else:
+                index = min(run.upload_attempts - 1, len(S3_UPLOAD_BACKOFF_S) - 1)
+                countdown = S3_UPLOAD_BACKOFF_S[index]
+                run.next_upload_attempt_at = utcnow() + timedelta(seconds=countdown)
+
+    if failure is None:
+        _enqueue_delivery(run_id)
+        return {"run_id": run_id, "status": "uploaded"}
+
+    if countdown is None:
+        # Retries exhausted. The run computed and the results are stranded on
+        # this box; the consumer has to be told, or it waits forever for a
+        # delivery that will never come. Retention never purges this run.
+        print(f"[{run_id[:8]}] artifact upload abandoned: {failure}", flush=True)
+        _enqueue_delivery(run_id)
+        return {"run_id": run_id, "status": "abandoned", "error": failure}
+
+    upload_run_artifacts.apply_async(args=[run_id], countdown=countdown)
+    return {"run_id": run_id, "status": "retrying", "in_s": countdown}
+
+
+def _write_run_manifest(run_id: str, store) -> str | None:
+    """Write run.json beside the artifacts. Returns an error string or None.
+
+    The same document the webhook carries. It costs nothing, makes the output
+    prefix self-describing to anyone browsing the bucket, and is the recovery
+    path if a delivery is abandoned and the webhook is lost for good.
+    """
+    import json
+
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            return None
+        _ = run.artifacts, run.stages
+        # An unsaved delivery: build_payload only reads these fields, and a
+        # manifest is not a delivery attempt, so persisting one would put a
+        # phantom row in the run's delivery history.
+        placeholder = WebhookDelivery(
+            id="manifest",
+            run_id=run_id,
+            url="",
+            event="run.completed" if run.status == RunStatus.SUCCEEDED else "run.failed",
+            attempts=0,
+        )
+        payload = build_payload(run, placeholder, _read_variant_cache(run_id))
+
+    payload.pop("delivery_id", None)
+    payload.pop("attempt", None)
+
+    path = RunPaths.for_run(RUNS_ROOT, run_id).root / "run.json"
+    try:
+        path.write_text(json.dumps(payload, indent=2, default=str))
+        store.upload(path, output_key(run_id, "run.json"), "application/json")
+    except (StorageError, OSError) as exc:
+        return f"run.json: {exc}"
+    return None
+
+
+@celery.task(name="app.tasks.sweep_pending_uploads")
+def sweep_pending_uploads() -> dict:
+    """Re-arm uploads whose retry message was lost, e.g. to a broker restart.
+
+    The same backstop sweep_pending_deliveries provides, for the same reason: a
+    scheduled Celery countdown lives in the broker and vanishes with it.
+    """
+    now = datetime.now(timezone.utc)
+    with session_scope() as session:
+        overdue = [r.id for r in session.query(Run).filter(
+            Run.artifacts_uploaded.is_(False),
+            Run.next_upload_attempt_at.isnot(None),
+            Run.next_upload_attempt_at <= now,
+        ).limit(100).all()]
+
+    for run_id in overdue:
+        upload_run_artifacts.apply_async(args=[run_id])
+    return {"requeued": len(overdue)}
 
 
 # ==========================================================================
@@ -431,6 +585,11 @@ def cleanup_expired_runs(hours: int | None = None) -> dict:
                 if d.status in (DeliveryStatus.PENDING, DeliveryStatus.FAILED)
             ]
             if undelivered:
+                continue
+
+            # Until the upload lands, these local files are the only copy of a
+            # successful result. Purging them would destroy it outright.
+            if not run.artifacts_uploaded:
                 continue
 
             run_dir = RUNS_ROOT / run.id
