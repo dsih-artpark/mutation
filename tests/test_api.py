@@ -12,6 +12,19 @@ from app.pipelines.base import Pipeline
 from app.runtime.context import RunContext, RunResult
 from app.runtime.spec import StageFailed
 
+
+@pytest.fixture()
+def client():
+    """Overrides conftest's client: every /v1 route now needs a credential."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    test_client = TestClient(app)
+    test_client.headers.update({"X-API-Key": "test-key"})
+    return test_client
+
+
 # Real escapes, not the doubled ones printf used to interpret: this string is
 # now written straight to disk, so the newlines and tabs must already be newlines
 # and tabs or parse_annotated_vcf sees a single unparseable line.

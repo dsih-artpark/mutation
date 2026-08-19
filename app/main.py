@@ -7,11 +7,12 @@ tasks.py (when to run it).
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import legacy_router, pipelines_router, runs_router
-from .config import RUNS_ROOT, WORKER_CONCURRENCY
+from .auth import require_principal
+from .config import CORS_ALLOWED_ORIGINS, RUNS_ROOT, WORKER_CONCURRENCY
 from .db import init_db
 from .pipelines import registry
 
@@ -34,16 +35,24 @@ app = FastAPI(
     ),
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# An explicit allowlist, and only the methods a browser actually uses. The
+# previous allow_origins=["*"] with credentials is precisely the configuration
+# that lets any page read an authenticated response.
+if CORS_ALLOWED_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["GET", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
-app.include_router(pipelines_router)
-app.include_router(runs_router)
-app.include_router(legacy_router)
+app.include_router(pipelines_router, dependencies=[Depends(require_principal)])
+app.include_router(runs_router, dependencies=[Depends(require_principal)])
+# Deprecated shim (Task 12 removes it), but /upload creates runs and takes a
+# callback_url, so it is exactly as trust-sensitive as /v1/runs and gets the
+# same credential requirement rather than being left open on its way out.
+app.include_router(legacy_router, dependencies=[Depends(require_principal)])
 
 
 @app.get("/", tags=["meta"])

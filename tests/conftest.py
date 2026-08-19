@@ -83,6 +83,12 @@ def _eager_celery():
     celery.conf.task_eager_propagates = False
 
 
+@pytest.fixture()
+def auth_headers():
+    """The API key tests/conftest.py configures. Every /v1 route needs one."""
+    return {"X-API-Key": "test-key"}
+
+
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
