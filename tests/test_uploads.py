@@ -263,12 +263,26 @@ def test_retention_never_purges_a_run_whose_artifacts_are_not_in_storage():
     """Until the upload lands, these local files are the only copy."""
     from app.tasks import cleanup_expired_runs
 
-    run_id = _make_run(callback_url=None)
+    run_id = _make_run(callback_url=None, input_key="uploads/x/a.fasta")
     cleanup_expired_runs(hours=0)
     assert _read(run_id)["uploaded"] is False
 
     with session_scope() as session:
         assert session.get(Run, run_id).artifacts_purged is False
+
+
+def test_retention_still_purges_a_run_that_predates_object_storage():
+    """A run with no input_key was never going to upload. Exempting it would
+    leave every historical run's files on the disk permanently -- its contract
+    was the ordinary retention window, and it still is."""
+    from app.tasks import cleanup_expired_runs
+
+    run_id = _make_run(callback_url=None, input_key=None)
+    assert _read(run_id)["uploaded"] is False
+
+    cleanup_expired_runs(hours=0)
+    with session_scope() as session:
+        assert session.get(Run, run_id).artifacts_purged is True
 
 
 def test_retention_purges_a_run_once_its_artifacts_are_uploaded():

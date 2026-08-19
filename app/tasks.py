@@ -609,7 +609,14 @@ def cleanup_expired_runs(hours: int | None = None) -> dict:
 
             # Until the upload lands, these local files are the only copy of a
             # successful result. Purging them would destroy it outright.
-            if not run.artifacts_uploaded:
+            #
+            # Scoped to runs that were actually meant to upload. A run predating
+            # object storage has input_key NULL and artifacts_uploaded False and
+            # will never be published by anything -- without this it would be
+            # exempt from retention forever, and every historical run's files
+            # would sit on the disk permanently. Its contract was the ordinary
+            # retention window, and it still is.
+            if run.input_key and not run.artifacts_uploaded:
                 continue
 
             run_dir = RUNS_ROOT / run.id
