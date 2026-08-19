@@ -246,3 +246,51 @@ def test_every_run_read_route_enforces_owner_scoping():
             unscoped.append(route.path)
 
     assert unscoped == [], f"GET routes without owner scoping: {unscoped}"
+
+
+# ------------------------------------------------------- hostile header bytes
+
+@pytest.mark.parametrize("raw", [
+    b"caf\xe9",          # a single high byte
+    b"\xff\xfe\x00",     # arbitrary binary
+    b"\xc3\xa9" * 200,   # long and non-ASCII
+])
+def test_a_non_ascii_api_key_is_401_not_500(raw):
+    """Regression: hmac.compare_digest refuses two str arguments unless both
+    are ASCII, and Starlette decodes header bytes as latin-1. Comparing as str
+    raised TypeError out of an unauthenticated code path, so any client could
+    force a 500 with one header byte.
+    """
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from app.auth import require_principal
+
+    request = Request({"type": "http", "headers": [(b"x-api-key", raw)]})
+    with pytest.raises(HTTPException) as caught:
+        require_principal(request)
+    assert caught.value.status_code == 401
+
+
+def test_a_non_ascii_bearer_token_is_401_not_500():
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from app.auth import require_principal
+
+    request = Request({
+        "type": "http",
+        "headers": [(b"authorization", b"Bearer caf\xe9.\xff\xfe.sig")],
+    })
+    with pytest.raises(HTTPException) as caught:
+        require_principal(request)
+    assert caught.value.status_code == 401
+
+
+def test_the_jwks_client_is_given_a_timeout():
+    """PyJWKClient defaults to urllib's timeout, which is none at all. A JWKS
+    host that accepts the connection then stalls would pin a worker thread per
+    request until the pool is gone -- an auth dependency taking the API down."""
+    from app.auth import JWKS_TIMEOUT_S
+
+    assert 0 < JWKS_TIMEOUT_S <= 10
