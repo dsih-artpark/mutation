@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .config import (
-    PUBLIC_BASE_URL,
+    S3_OUTPUT_PREFIX,
     WEBHOOK_ALLOW_PRIVATE_IPS,
     WEBHOOK_ALLOWED_HOSTS,
     WEBHOOK_MAX_INLINE_VARIANTS,
@@ -26,6 +26,7 @@ from .config import (
     WEBHOOK_TIMEOUT_S,
 )
 from .models import Run, WebhookDelivery
+from .storage import bucket_name
 
 SIGNATURE_HEADER = "X-Dharini-Signature"
 TIMESTAMP_HEADER = "X-Dharini-Timestamp"
@@ -111,14 +112,25 @@ def _reject_internal_addresses(host: str) -> None:
 # --------------------------------------------------------------------------
 
 def build_payload(run: Run, delivery: WebhookDelivery, variants: list[dict] | None = None) -> dict:
-    """Metadata plus parsed variants inline; bulk files by URL.
+    """Metadata plus parsed variants inline; bulk files by bucket/key.
 
     Bounded on purpose. Embedding raw VCF text made payload size scale with
     variant count, which for a deep FASTQ run means a multi-megabyte POST that
     then has to survive six retries.
+
+    Artifacts point at S3 rather than a PUBLIC_BASE_URL link: retention
+    deletes the local copy in hours, while the bucket is durable, and Dharini
+    presigns a GET itself rather than trusting a link this service hands out.
+
+    run.output_bucket, not today's configured bucket, names where the files
+    actually are -- a payload can be rebuilt at redelivery time long after
+    S3_BUCKET has been rotated, and it must still point at the bucket that
+    run's objects were written to. It is only unset for a run whose upload
+    has not happened yet, hence the fallback.
     """
     variants = variants or []
     truncated = len(variants) > WEBHOOK_MAX_INLINE_VARIANTS
+    bucket = run.output_bucket or bucket_name()
 
     return {
         "event": delivery.event,
@@ -129,6 +141,10 @@ def build_payload(run: Run, delivery: WebhookDelivery, variants: list[dict] | No
         "attempt": (delivery.attempts or 0) + 1,
         "run": {
             "id": run.id,
+            # Lets a consumer correlate a delivery without having recorded
+            # run_id, which matters when the original 202 response was lost.
+            "external_id": run.external_id,
+            "owner_id": run.owner_id,
             "pipeline_id": run.pipeline_id,
             "pipeline_version": run.pipeline_version,
             "status": run.status.value,
@@ -164,10 +180,17 @@ def build_payload(run: Run, delivery: WebhookDelivery, variants: list[dict] | No
                 "filename": artifact.filename,
                 "size_bytes": artifact.size_bytes,
                 "content_type": artifact.content_type,
-                "url": f"{PUBLIC_BASE_URL}/v1/runs/{run.id}/artifacts/{artifact.filename}",
+                "bucket": bucket,
+                # None until `upload_run_artifacts` (Task 9) has run this
+                # artifact through -- artifacts_uploaded below says so
+                # explicitly rather than leaving a null key to be misread.
+                "key": artifact.s3_key,
             }
             for artifact in run.artifacts
         ],
+        "artifacts_uploaded": run.artifacts_uploaded,
+        "artifacts_error": run.upload_error or None,
+        "output": {"bucket": bucket, "prefix": f"{S3_OUTPUT_PREFIX}{run.id}/"},
     }
 
 

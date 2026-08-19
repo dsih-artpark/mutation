@@ -9,8 +9,9 @@ import pytest
 
 from app.config import WEBHOOK_BACKOFF_S
 from app.db import session_scope
-from app.delivery import CallbackRejected, sign, validate_callback_url
-from app.models import DeliveryStatus, Run, RunStatus, WebhookDelivery, utcnow
+from app.delivery import CallbackRejected, build_payload, sign, validate_callback_url
+from app.models import DeliveryStatus, Run, RunArtifact, RunStatus, WebhookDelivery, utcnow
+from app.storage import bucket_name, output_key
 
 
 # ---------------------------------------------------------------- fixtures
@@ -41,6 +42,51 @@ def make_delivery(run_id, max_attempts=6):
         session.add(delivery)
         session.flush()
         return delivery.id
+
+
+@pytest.fixture
+def delivered_payload():
+    """A run whose artifacts have already reached S3 -- the common case a
+    consumer sees, and the shape spec section 12 documents.
+
+    external_id carries a fixed, spec-matching value, and the database is
+    session-scoped (see conftest._database) rather than reset per test, so the
+    run this creates is deleted again on teardown -- otherwise a second test
+    using this fixture would collide with the first on the unique constraint.
+    """
+    with session_scope() as session:
+        run = Run(
+            pipeline_id="test", pipeline_version="1.0.0", status=RunStatus.SUCCEEDED,
+            external_id="dharini-job-8831", owner_id="u17",
+            callback_url="https://consumer.example.org/hook", params={},
+            metrics={"variant_count": 3},
+            started_at=utcnow(), finished_at=utcnow(),
+            output_bucket=bucket_name(), artifacts_uploaded=True,
+        )
+        session.add(run)
+        session.flush()
+        run_id = run.id
+
+        session.add(RunArtifact(
+            run_id=run.id, kind="vcf", label="Annotated variants",
+            filename="annotated.vcf", size_bytes=48210, content_type="text/plain",
+            s3_key=output_key(run.id, "annotated.vcf"), uploaded_at=utcnow(),
+        ))
+        delivery = WebhookDelivery(
+            run_id=run.id, url="https://consumer.example.org/hook",
+            event="run.completed", max_attempts=6, attempts=0, next_attempt_at=utcnow(),
+        )
+        session.add(delivery)
+        session.flush()
+
+        session.refresh(run)
+        _ = run.artifacts, run.stages
+        payload = build_payload(run, delivery, [{"pos": 1, "ref": "A", "alt": "G"}])
+
+    yield payload
+
+    with session_scope() as session:
+        session.delete(session.get(Run, run_id))
 
 
 class _Response:
@@ -335,3 +381,69 @@ def test_payload_truncates_large_variant_sets():
     assert payload["variants_truncated"] is True
     assert len(payload["variants"]) == WEBHOOK_MAX_INLINE_VARIANTS
     assert payload["variants_total"] == len(rows)
+
+
+# ------------------------------------------------------- bucket/key payload
+
+def test_artifacts_are_reported_by_bucket_and_key(delivered_payload):
+    artifact = delivered_payload["artifacts"][0]
+    assert artifact["bucket"] and artifact["key"].startswith("runs/")
+    assert "url" not in artifact
+
+
+def test_the_payload_carries_the_correlation_ids(delivered_payload):
+    assert delivered_payload["run"]["external_id"] == "dharini-job-8831"
+    assert delivered_payload["run"]["owner_id"] == "u17"
+
+
+def test_the_payload_says_whether_artifacts_reached_storage(delivered_payload):
+    assert delivered_payload["artifacts_uploaded"] is True
+    assert delivered_payload["artifacts_error"] is None
+    assert delivered_payload["output"]["prefix"].startswith("runs/")
+
+
+def test_no_file_bytes_are_embedded(delivered_payload):
+    """A multi-megabyte body that must survive six retries is not a delivery
+    mechanism. Parsed variant rows stay; raw files are keys."""
+    import json
+    assert "snps_vcf_data" not in json.dumps(delivered_payload)
+
+
+def test_bucket_falls_back_to_configured_bucket_when_run_has_none():
+    """A run whose upload has not happened yet has no output_bucket recorded.
+    The payload must still name a bucket rather than emit null."""
+    run_id = make_run()
+    delivery_id = make_delivery(run_id)
+
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        assert run.output_bucket is None  # sanity: nothing has uploaded yet
+        delivery = session.get(WebhookDelivery, delivery_id)
+        _ = run.artifacts, run.stages
+        payload = build_payload(run, delivery, [])
+
+    assert payload["output"]["bucket"] == bucket_name()
+
+
+def test_unuploaded_artifacts_still_produce_a_well_formed_payload():
+    """artifact.s3_key is None before upload runs. A payload built in that
+    window (e.g. an early status webhook) must not crash -- it should say so
+    plainly instead: no key, artifacts_uploaded False."""
+    run_id = make_run()
+    delivery_id = make_delivery(run_id)
+
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        session.add(RunArtifact(
+            run_id=run_id, kind="vcf", label="Annotated variants",
+            filename="annotated.vcf", size_bytes=0, content_type="text/plain",
+        ))
+        session.flush()
+        session.refresh(run)
+        delivery = session.get(WebhookDelivery, delivery_id)
+        _ = run.artifacts, run.stages
+        payload = build_payload(run, delivery, [])
+
+    assert payload["artifacts_uploaded"] is False
+    assert payload["artifacts"][0]["key"] is None
+    assert payload["artifacts"][0]["bucket"] == bucket_name()
