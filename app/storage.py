@@ -287,17 +287,29 @@ class S3Store:
             return _stream_to_disk(body, Path(dest), max_bytes, key)
 
     def upload(self, path: Path, key: str, content_type: str) -> None:
+        from boto3.exceptions import S3UploadFailedError
         from botocore.exceptions import BotoCoreError, ClientError
 
-        extra = {"ContentType": content_type, "ServerSideEncryption": self.sse}
-        if self.sse == "aws:kms":
-            extra["SSEKMSKeyId"] = self.kms_key_id
+        extra = {"ContentType": content_type}
+        # An empty S3_SSE omits the header and relies on the bucket's default
+        # encryption. AWS has encrypted new objects with SSE-S3 since January
+        # 2023, so the header is redundant there -- and an S3-compatible store
+        # without KMS rejects it outright.
+        if self.sse:
+            extra["ServerSideEncryption"] = self.sse
+            if self.sse == "aws:kms":
+                extra["SSEKMSKeyId"] = self.kms_key_id
 
         try:
             # upload_file negotiates multipart on its own, which is what makes a
             # 3 GB BAM work with no special case here.
             self._client.upload_file(str(path), self.bucket, key, ExtraArgs=extra)
-        except (ClientError, BotoCoreError) as exc:
+        except (ClientError, BotoCoreError, S3UploadFailedError) as exc:
+            # S3UploadFailedError is boto3's own wrapper and inherits from
+            # NEITHER botocore exception. Catching only those two lets a failed
+            # upload escape this module un-wrapped, and the worker's
+            # `except StorageError` retry path would never see it -- the run
+            # would crash instead of retrying.
             raise TransferFailed(f"put {key}: {exc}") from exc
 
 

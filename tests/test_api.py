@@ -107,7 +107,11 @@ def test_pipeline_detail_exposes_schema(client):
     """Dharini renders its parameter form from this."""
     body = client.get("/v1/pipelines/ont-lsdv").json()
     assert body["params_schema"]["properties"]["variant"]["properties"]["tool"]["enum"]
-    assert body["stages"][0] == "prepare"
+    # The platform's own bookends are reported alongside the author's stages, so
+    # the denominator a client polls matches what will actually run.
+    assert body["stages"][0] == "fetch"
+    assert body["stages"][-1] == "publish"
+    assert "prepare" in body["stages"]
 
 
 def test_unknown_pipeline_is_404(client):
@@ -168,7 +172,10 @@ def test_run_succeeds_and_records_stages(client, completed_run):
     assert [s["name"] for s in body["stages"]] == ["prepare", "call"]
     assert all(s["status"] == "SUCCEEDED" for s in body["stages"])
     assert all(s["duration_s"] is not None for s in body["stages"])
-    assert body["progress"] == "2/2"
+    # 2 of 4: the denominator counts fetch and publish, which the worker does
+    # not yet execute. Tasks 8 and 9 make this 4/4; until then the gap is the
+    # honest reading -- the stages are declared and not yet run.
+    assert body["progress"] == "2/4"
 
 
 def test_hostile_filename_is_normalised_on_disk(client):
