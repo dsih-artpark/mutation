@@ -66,6 +66,22 @@ class Run(Base):
     pipeline_id: Mapped[str] = mapped_column(String(64), index=True)
     pipeline_version: Mapped[str] = mapped_column(String(32))
 
+    # Chosen by Dharini before submitting. Carries the unique constraint, so a
+    # client timeout and retry returns the original run instead of starting a
+    # second one -- on a single box that is an hour of duplicated compute. It
+    # also survives a lost 202: correlation works even when the caller never
+    # learned the run_id.
+    external_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+
+    # Which of Dharini's users this run belongs to. A browser token may read
+    # only its own; a service key sees everything. Nullable, because an
+    # operational re-run submitted by `ops` has no user.
+    owner_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
+
+    # The API key label that submitted it. Answers "who started this" months
+    # later without trawling access logs.
+    submitted_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     status: Mapped[RunStatus] = mapped_column(
         Enum(RunStatus, native_enum=False, length=16),
         default=RunStatus.QUEUED,
@@ -78,6 +94,14 @@ class Run(Base):
     # to the pipeline's expected name, so hostile filenames never reach a tool.
     input_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
     input_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Object-store key of the primary input, fetched by the `fetch` bookend
+    # before the pipeline runs. Replaces the old convention of stashing
+    # `_input_name` inside `params` and stripping it back out on read.
+    input_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Declared-name -> object-store key, replacing `_extra_inputs` in `params`
+    # the same way. A dict because a pipeline may declare more than one.
+    extra_input_keys: Mapped[dict] = mapped_column(JSON, default=dict)
 
     callback_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -93,6 +117,22 @@ class Run(Base):
 
     # True once artifacts have been swept off disk by retention.
     artifacts_purged: Mapped[bool] = mapped_column(default=False)
+
+    # Recorded per run rather than read from config at display time: S3_BUCKET
+    # may change, and a six-month-old run's objects stay where they were put.
+    output_bucket: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # A run that computed correctly but whose artifacts could not be uploaded is
+    # a SUCCEEDED run with artifacts_uploaded False -- never a failed run. The
+    # same rule WebhookDelivery already follows, for the same reason: discarding
+    # twenty minutes of Clair3 over a transient S3 error is the expensive
+    # mistake.
+    artifacts_uploaded: Mapped[bool] = mapped_column(default=False)
+    upload_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    upload_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_upload_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     stages: Mapped[list[RunStage]] = relationship(
         back_populates="run", cascade="all, delete-orphan", order_by="RunStage.ordinal"
@@ -141,9 +181,20 @@ class RunStage(Base):
     image: Mapped[str | None] = mapped_column(String(256), nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Written by the peak-memory sampler that already runs. Distinguishes a
+    # healthy twenty-minute Clair3 stage from a wedged worker -- without it the
+    # two are indistinguishable from outside.
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     run: Mapped[Run] = relationship(back_populates="stages")
 
-    __table_args__ = (Index("ix_run_stages_run_ordinal", "run_id", "ordinal"),)
+    __table_args__ = (
+        Index("ix_run_stages_run_ordinal", "run_id", "ordinal"),
+        # Drives the ETA median: "how long does `variant` usually take".
+        Index("ix_run_stages_name_status", "name", "status"),
+    )
 
 
 class RunArtifact(Base):
@@ -160,6 +211,11 @@ class RunArtifact(Base):
     filename: Mapped[str] = mapped_column(String(256))  # basename within output/
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     content_type: Mapped[str] = mapped_column(String(128), default="application/octet-stream")
+
+    s3_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Per-artifact, so a retry after four of five files landed uploads one file
+    # rather than five.
+    uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     run: Mapped[Run] = relationship(back_populates="artifacts")
 

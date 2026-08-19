@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -72,6 +73,13 @@ async def create_run(
     run = Run(
         pipeline_id=pipeline.id,
         pipeline_version=pipeline.version,
+        # external_id is NOT NULL and unique -- it is meant to be the caller's
+        # own idempotency key (a retried submission should return the original
+        # run, not start a second one). Task 12 adds it to the request body;
+        # until then there is no caller-supplied value to key off, so a fresh
+        # uuid4 stands in, which satisfies the constraint without granting
+        # idempotency.
+        external_id=str(uuid.uuid4()),
         status=RunStatus.QUEUED,
         params=validated,
         input_filename=file.filename,

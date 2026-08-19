@@ -47,3 +47,35 @@ def test_every_revision_downgrades(tmp_path):
     config = _config(url)
     command.upgrade(config, "head")
     command.downgrade(config, "base")
+
+
+def test_the_backfill_gives_every_historical_run_a_unique_external_id(tmp_path):
+    """external_id is NOT NULL and unique, and historical rows have none.
+
+    Backfilled with the run's own id: unique by construction, stable, and
+    correct in the only sense that matters -- nothing will ever resubmit it.
+    """
+    from sqlalchemy import text
+
+    url = f"sqlite:///{tmp_path / 'backfill.db'}"
+    config = _config(url)
+
+    command.upgrade(config, "0001")
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        for run_id in ("run-a", "run-b"):
+            connection.execute(text(
+                "INSERT INTO runs (id, pipeline_id, pipeline_version, status, "
+                "params, metrics, artifacts_purged, created_at) VALUES "
+                f"('{run_id}', 'p', '1', 'SUCCEEDED', '{{}}', '{{}}', 0, "
+                "'2026-01-01 00:00:00')"
+            ))
+
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        rows = dict(connection.execute(text(
+            "SELECT id, external_id FROM runs"
+        )).all())
+
+    assert rows == {"run-a": "run-a", "run-b": "run-b"}

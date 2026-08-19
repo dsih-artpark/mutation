@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 from unittest.mock import patch
+import uuid
 
 import httpx
 import pytest
@@ -18,6 +19,10 @@ def make_run(status=RunStatus.SUCCEEDED, url="https://consumer.example.org/hook"
     with session_scope() as session:
         run = Run(
             pipeline_id="test", pipeline_version="1.0.0", status=status,
+            # external_id is NOT NULL and unique; this fixture has no real
+            # caller-supplied id to key off, so a fresh uuid4 satisfies the
+            # constraint the same way app/api/runs.py's create_run does.
+            external_id=str(uuid.uuid4()),
             callback_url=url, params={}, metrics={"variant_count": 3},
             started_at=utcnow(), finished_at=utcnow(),
         )
