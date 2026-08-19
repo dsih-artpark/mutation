@@ -30,10 +30,11 @@ from tests.contract import (
     assert_pipeline_contract,
 )
 
-# Synthetic pipelines registered by tests/test_api.py for control-plane tests.
-# They live outside app/pipelines, ship no manifest.yaml, and are not part of
-# the "adding a pipeline is one new directory" contract this suite enforces.
-_TEST_FIXTURE_IDS = {"test-echo", "test-fail"}
+# Synthetic pipelines registered by tests/test_api.py and tests/test_progress.py
+# for control-plane and progress/ETA tests. They live outside app/pipelines,
+# ship no manifest.yaml, and are not part of the "adding a pipeline is one new
+# directory" contract this suite enforces.
+_TEST_FIXTURE_IDS = {"test-echo", "test-fail", "test-progress", "test-progress-hist"}
 
 
 def _real_pipelines():

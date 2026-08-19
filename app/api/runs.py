@@ -22,8 +22,9 @@ from ..db import get_session
 from ..delivery import CallbackRejected, validate_callback_url
 from ..models import DeliveryStatus, Run, RunStatus, WebhookDelivery, utcnow
 from ..pipelines import ParamsInvalid, PipelineNotFound, registry
+from ..progress import build_progress
 from ..runtime.context import RunPaths
-from ..schemas import RunAccepted, RunDetail, RunSummary
+from ..schemas import ProgressOut, RunAccepted, RunDetail, RunSummary
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
 
@@ -209,6 +210,24 @@ def get_run(
         ],
     )
     return RunDetail(**detail)
+
+
+@router.get("/{run_id}/progress", response_model=ProgressOut)
+def get_progress(
+    run_id: str,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_principal),
+):
+    """Small and fixed-size, built for a 3-5 second poll. `GET /v1/runs/{id}`
+    drags params, artifacts and deliveries with it and is the wrong shape to
+    hit that often.
+    """
+    run = _visible_run(session, run_id, principal)
+    try:
+        pipeline = registry.get(run.pipeline_id)
+    except PipelineNotFound:
+        raise HTTPException(404, f"pipeline {run.pipeline_id!r} is no longer registered") from None
+    return build_progress(session, run, pipeline)
 
 
 @router.get("/{run_id}/artifacts/{filename}")

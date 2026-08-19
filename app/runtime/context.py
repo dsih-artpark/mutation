@@ -94,6 +94,7 @@ class StageRecorder(Protocol):
                        image: str | None) -> None: ...
     def stage_failed(self, name: str, message: str, exit_code: int | None) -> None: ...
     def stage_skipped(self, name: str, reason: str) -> None: ...
+    def heartbeat(self, name: str) -> None: ...
     def log(self, message: str) -> None: ...
 
 
@@ -102,6 +103,7 @@ class NullRecorder:
     def stage_finished(self, name, duration_s, peak_memory_mb, image): pass
     def stage_failed(self, name, message, exit_code): pass
     def stage_skipped(self, name, reason): pass
+    def heartbeat(self, name): pass
     def log(self, message): print(message, flush=True)
 
 
@@ -139,6 +141,10 @@ class RunContext:
             workdir=paths.work,
             mounts=[(paths.root, False), (self.refs_dir, True)],
             log_dir=paths.logs,
+            # getattr, not a hard attribute access: a recorder that predates
+            # this feature (a test double duck-typing StageRecorder without
+            # subclassing it) should still work, just without a heartbeat.
+            on_heartbeat=getattr(self.recorder, "heartbeat", None),
         )
 
     # -- convenience accessors --------------------------------------------

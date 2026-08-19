@@ -27,6 +27,7 @@ from pathlib import Path
 from ..config import (
     DEFAULT_STAGE_TIMEOUT_S,
     DOCKER_BIN,
+    HEARTBEAT_INTERVAL_S,
     MAX_STAGE_CPUS,
     MAX_STAGE_MEMORY_GB,
     STATS_SAMPLE_INTERVAL_S,
@@ -129,12 +130,17 @@ class _PeakMemorySampler(threading.Thread):
     this box actually need" from real runs instead of estimates.
     """
 
-    def __init__(self, container: str, interval: float):
+    def __init__(self, container: str, interval: float, on_sample=None):
         super().__init__(daemon=True)
         self.container = container
         self.interval = interval
         self.peak_mb: float | None = None
         self._stop = threading.Event()
+        # Liveness piggybacks on this sampler rather than a separate thread
+        # (spec S20): it already polls every STATS_SAMPLE_INTERVAL_S, so a
+        # heartbeat costs one throttled callback, not a second timer.
+        self._on_sample = on_sample
+        self._last_beat = 0.0
 
     def run(self) -> None:
         while not self._stop.wait(self.interval):
@@ -152,6 +158,19 @@ class _PeakMemorySampler(threading.Thread):
             if mb is not None and (self.peak_mb is None or mb > self.peak_mb):
                 self.peak_mb = mb
 
+            # Throttled well below the memory-sampling interval: this writes
+            # to Postgres, and liveness at ten-second resolution is as useful
+            # as at two.
+            now = time.monotonic()
+            if self._on_sample and now - self._last_beat >= HEARTBEAT_INTERVAL_S:
+                self._last_beat = now
+                try:
+                    self._on_sample()
+                except Exception:
+                    # A heartbeat is telemetry. Losing one must never take
+                    # the stage down with it.
+                    pass
+
     def stop(self) -> None:
         self._stop.set()
 
@@ -159,17 +178,24 @@ class _PeakMemorySampler(threading.Thread):
 class StageRunner:
     """Executes StageSpecs. One instance per run."""
 
-    def __init__(self, run_id: str, workdir: Path, mounts: list[tuple[Path, bool]], log_dir: Path):
+    def __init__(
+        self, run_id: str, workdir: Path, mounts: list[tuple[Path, bool]], log_dir: Path,
+        on_heartbeat=None,
+    ):
         """
         Args:
             mounts: (path, read_only) pairs exposed at the identical path
                     inside the container.
+            on_heartbeat: called as `on_heartbeat(stage_name)` roughly every
+                    HEARTBEAT_INTERVAL_S while a container runs. Optional so
+                    tests and tools/run_local.py need not supply one.
         """
         self.run_id = run_id
         self.workdir = workdir
         self.mounts = mounts
         self.log_dir = log_dir
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.on_heartbeat = on_heartbeat
         self._counter = 0
 
     # -- public ------------------------------------------------------------
@@ -220,7 +246,8 @@ class StageRunner:
 
         sampler = None
         if STATS_SAMPLE_INTERVAL_S > 0:
-            sampler = _PeakMemorySampler(container, STATS_SAMPLE_INTERVAL_S)
+            on_sample = (lambda: self.on_heartbeat(stage)) if self.on_heartbeat else None
+            sampler = _PeakMemorySampler(container, STATS_SAMPLE_INTERVAL_S, on_sample=on_sample)
             sampler.start()
 
         try:

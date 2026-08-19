@@ -86,6 +86,19 @@ class DbRecorder:
                 started_at=utcnow(), finished_at=utcnow(),
             ))
 
+    def heartbeat(self, name: str) -> None:
+        """Its own short-lived session, per write.
+
+        Sharing a session with the worker thread would let the sampling
+        thread hold a connection for the length of a twenty-minute stage
+        (G17). Errors are swallowed by the sampler that calls this, not here
+        -- so a rollback stays local to this one write.
+        """
+        with session_scope() as session:
+            stage = self._current(session, name)
+            if stage:
+                stage.last_heartbeat_at = utcnow()
+
     def log(self, message: str) -> None:
         print(f"[{self.run_id[:8]}] {message}", flush=True)
 

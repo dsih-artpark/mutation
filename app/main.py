@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import legacy_router, pipelines_router, runs_router
+from .api import legacy_router, pipelines_router, queue_router, runs_router
 from .auth import require_principal
 from .config import CORS_ALLOWED_ORIGINS, RUNS_ROOT, WORKER_CONCURRENCY
 from .db import init_db
@@ -49,6 +49,7 @@ if CORS_ALLOWED_ORIGINS:
 
 app.include_router(pipelines_router, dependencies=[Depends(require_principal)])
 app.include_router(runs_router, dependencies=[Depends(require_principal)])
+app.include_router(queue_router, dependencies=[Depends(require_principal)])
 # Deprecated shim (Task 12 removes it), but /upload creates runs and takes a
 # callback_url, so it is exactly as trust-sensitive as /v1/runs and gets the
 # same credential requirement rather than being left open on its way out.

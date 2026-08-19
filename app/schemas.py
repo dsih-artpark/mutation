@@ -80,6 +80,49 @@ class RunAccepted(BaseModel):
     queue_position: int | None = None
 
 
+class StageProgressOut(BaseModel):
+    name: str
+    status: str
+    duration_s: float | None = None
+
+
+class ProgressOut(BaseModel):
+    """Small and fixed-size -- built for a 3-5 second poll, unlike RunDetail
+    which drags params, artifacts and deliveries with it."""
+
+    run_id: str
+    external_id: str
+    status: str
+    stage: str | None = None
+    stage_index: int | None = None
+    stage_total: int
+    stage_started_at: datetime | None = None
+    stage_elapsed_s: float | None = None
+    stage_typical_s: float | None = None
+    heartbeat_age_s: float | None = None
+    eta_s: int | None = None
+    eta_at: datetime | None = None
+    queue_position: int | None = None
+    estimated_start_s: int | None = None
+    stages: list[StageProgressOut] = []
+
+
+class QueueRunningOut(BaseModel):
+    run_id: str
+    pipeline_id: str
+    stage: str | None = None
+    eta_s: int | None = None
+
+
+class QueueOut(BaseModel):
+    worker_concurrency: int
+    queued: int
+    estimated_wait_s: int | None = None
+    # Omitted entirely (not just null) for a Bearer token -- another user's
+    # run ids are sensitive, queue depth and wait are not (spec §14).
+    running: list[QueueRunningOut] | None = None
+
+
 class PipelineOut(BaseModel):
     id: str
     version: str
