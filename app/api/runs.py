@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from ..auth import Principal, require_principal, require_service
 from ..config import MAX_UPLOAD_BYTES, PUBLIC_BASE_URL, RUNS_ROOT
 from ..db import get_session
 from ..delivery import CallbackRejected, validate_callback_url
@@ -141,28 +142,32 @@ def list_runs(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: Session = Depends(get_session),
+    principal: Principal = Depends(require_principal),
 ):
     query = session.query(Run)
     if pipeline_id:
         query = query.filter(Run.pipeline_id == pipeline_id)
     if status:
         query = query.filter(Run.status == status)
+    query = _visible_runs(query, principal)
 
     runs = query.order_by(Run.created_at.desc()).offset(offset).limit(limit).all()
     return [_summary(run) for run in runs]
 
 
 @router.get("/{run_id}", response_model=RunDetail)
-def get_run(run_id: str, session: Session = Depends(get_session)):
+def get_run(
+    run_id: str,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_principal),
+):
     """Full run state.
 
     Retained deliberately alongside webhooks. Push gives Dharini low latency;
     this endpoint is how it reconciles after downtime, and how a support
     question about a six-week-old run gets answered.
     """
-    run = session.get(Run, run_id)
-    if run is None:
-        raise HTTPException(404, f"unknown run: {run_id}")
+    run = _visible_run(session, run_id, principal)
 
     total = len(registry.get(run.pipeline_id).effective_stages) if run.pipeline_id in registry else 0
     done = sum(1 for stage in run.stages if stage.status.value in ("SUCCEEDED", "SKIPPED"))
@@ -207,10 +212,13 @@ def get_run(run_id: str, session: Session = Depends(get_session)):
 
 
 @router.get("/{run_id}/artifacts/{filename}")
-def download_artifact(run_id: str, filename: str, session: Session = Depends(get_session)):
-    run = session.get(Run, run_id)
-    if run is None:
-        raise HTTPException(404, f"unknown run: {run_id}")
+def download_artifact(
+    run_id: str,
+    filename: str,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_principal),
+):
+    run = _visible_run(session, run_id, principal)
 
     # Only registered artifacts are served -- the filename never reaches the
     # filesystem unvalidated, so no traversal is possible.
@@ -230,12 +238,13 @@ def download_artifact(run_id: str, filename: str, session: Session = Depends(get
                         media_type=artifact.content_type)
 
 
-@router.post("/{run_id}/redeliver", status_code=202)
+@router.post("/{run_id}/redeliver", status_code=202, dependencies=[Depends(require_service)])
 def redeliver(run_id: str, session: Session = Depends(get_session)):
     """Re-send the completion webhook.
 
     The manual recovery path for the case webhooks are worst at: the consumer
-    was down for longer than the retry schedule.
+    was down for longer than the retry schedule. Service-only: like
+    create_run, this is Dharini's server acting, not a browser reading.
     """
     run = session.get(Run, run_id)
     if run is None:
@@ -264,6 +273,32 @@ def redeliver(run_id: str, session: Session = Depends(get_session)):
 # ==========================================================================
 # Helpers
 # ==========================================================================
+
+def _visible_run(session: Session, run_id: str, principal: Principal) -> Run:
+    """Fetch a run the caller is allowed to see.
+
+    A run owned by someone else is reported as absent, not forbidden. A 403
+    confirms the run exists, which turns id enumeration into a working
+    membership oracle.
+    """
+    run = session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(404, f"unknown run: {run_id}")
+    if principal.owner_id is not None and run.owner_id != principal.owner_id:
+        raise HTTPException(404, f"unknown run: {run_id}")
+    return run
+
+
+def _visible_runs(query, principal: Principal):
+    """Scope a list query to what the caller may see.
+
+    A service key's owner_id is None -- Dharini's server sees every run --
+    so the filter keys off the principal, not off the run.
+    """
+    if principal.owner_id is not None:
+        query = query.filter(Run.owner_id == principal.owner_id)
+    return query
+
 
 def _summary(run: Run) -> RunSummary:
     return RunSummary(
