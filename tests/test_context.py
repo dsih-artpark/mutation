@@ -234,3 +234,41 @@ def test_a_pipeline_declaring_no_stages_is_left_alone(tmp_path):
     with bare.stage("anything"):
         pass
     assert bare.stage_log[0]["name"] == "anything"
+
+
+# ------------------------------------------------------------ content types
+
+@pytest.mark.parametrize("filename,expected", [
+    # The one that was actually wrong: mimetypes maps .vcf to text/x-vcard, a
+    # vCard contact card. That value is stored as object metadata and decides
+    # what a browser does when someone downloads a variant call file.
+    ("annotated.vcf", "text/plain"),
+    ("snps.vcf.gz", "application/gzip"),      # compression wins over .vcf
+    ("reads.fastq.gz", "application/gzip"),
+    ("consensus.fasta", "text/plain"),
+    ("aligned.bam", "application/octet-stream"),
+    ("aligned.bam.bai", "application/octet-stream"),
+    ("primers.bed", "text/plain"),
+    ("visualization.html", "text/html"),
+    ("run.json", "application/json"),
+    ("something.unknown", "application/octet-stream"),
+])
+def test_artifact_content_types_describe_genomics_formats(filename, expected):
+    from app.runtime.context import _content_type
+
+    assert _content_type(filename) == expected
+
+
+def test_a_published_artifact_carries_the_corrected_type(tmp_path):
+    from app.runtime.context import RunContext, RunPaths
+
+    paths = RunPaths.for_run(tmp_path / "runs", "run-ct").create()
+    ctx = RunContext(run_id="run-ct", params={}, paths=paths,
+                     refs_dir=tmp_path, stages=["only"])
+
+    source = paths.work / "annotated.vcf"
+    source.write_text("##fileformat=VCFv4.2\n")
+    with ctx.stage("only"):
+        ctx.artifact(source, kind="vcf", label="Annotated variants")
+
+    assert ctx.result.artifacts[0].content_type == "text/plain"

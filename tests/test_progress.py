@@ -161,7 +161,20 @@ def queued_run():
     _make(2)
     target = _make(1)
 
-    yield target
+    # The position is asserted as a DELTA over whatever else is queued, not as
+    # an absolute. The suite shares one session-scoped database and at least one
+    # other test deliberately leaves runs QUEUED (it patches apply_async to
+    # prove a duplicate submission starts no second task), so an absolute count
+    # here is a test that passes or fails on collection order.
+    with session_scope() as db_session:
+        target_run = db_session.get(Run, target)
+        ahead = db_session.query(Run).filter(
+            Run.status == RunStatus.QUEUED,
+            Run.created_at < target_run.created_at,
+            Run.id.notin_(created),
+        ).count()
+
+    yield target, ahead
 
     with session_scope() as db_session:
         db_session.query(Run).filter(Run.id.in_(created)).delete(synchronize_session=False)
@@ -274,10 +287,13 @@ def test_heartbeat_age_rises_when_the_sampler_stops(running_run, freeze_time):
 
 
 def test_a_queued_run_reports_its_position_not_a_stage(queued_run):
-    payload = _progress(queued_run)
+    target, ahead = queued_run
+
+    payload = _progress(target)
     assert payload["status"] == "QUEUED"
     assert payload["stage"] is None
-    assert payload["queue_position"] == 2
+    # The two the fixture queued ahead of it, plus anything else already there.
+    assert payload["queue_position"] == ahead + 2
 
 
 def test_the_progress_payload_stays_small(running_run):

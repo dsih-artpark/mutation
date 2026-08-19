@@ -60,6 +60,45 @@ class RunPaths:
         return self
 
 
+# Python's mimetypes table is built for desktop file formats and predates every
+# one of these. Left to guess, it calls a Variant Call Format file text/x-vcard
+# -- a vCard contact -- which is the content type that then gets stored as
+# object metadata and decides what a browser does when someone downloads it.
+_GENOMICS_TYPES = {
+    ".vcf": "text/plain",
+    ".gvcf": "text/plain",
+    ".bed": "text/plain",
+    ".fasta": "text/plain",
+    ".fa": "text/plain",
+    ".fastq": "text/plain",
+    ".fq": "text/plain",
+    ".gff3": "text/plain",
+    ".sam": "text/plain",
+    ".bam": "application/octet-stream",
+    ".bai": "application/octet-stream",
+    ".cram": "application/octet-stream",
+    ".gz": "application/gzip",
+    ".bgz": "application/gzip",
+    ".tbi": "application/octet-stream",
+    ".html": "text/html",
+    ".json": "application/json",
+    ".tsv": "text/tab-separated-values",
+    ".csv": "text/csv",
+}
+
+
+def _content_type(filename: str) -> str:
+    """What this file actually is, for a download header and object metadata.
+
+    Suffix-wise from the right, so `snps.vcf.gz` is gzip rather than plain text.
+    """
+    lowered = filename.lower()
+    for suffix, content_type in _GENOMICS_TYPES.items():
+        if lowered.endswith(suffix):
+            return content_type
+    return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
 @dataclass
 class Artifact:
     kind: str
@@ -294,7 +333,7 @@ class RunContext:
             self.paths.output.mkdir(parents=True, exist_ok=True)
             shutil.move(str(path), str(destination))
 
-        content_type = mimetypes.guess_type(destination.name)[0] or "application/octet-stream"
+        content_type = _content_type(destination.name)
         self._result.artifacts.append(
             Artifact(kind=kind, label=label, path=destination, content_type=content_type)
         )

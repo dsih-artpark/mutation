@@ -372,9 +372,13 @@ def test_health_reports_disk(client):
 def test_health_probes_storage_and_schema(client):
     """Credentials failing at 02:00 on a run that has been computing for forty
     minutes should not be the first sign of a misconfiguration."""
+    from app.config import STORAGE_BACKEND
+
     body = client.get("/health").json()
     assert body["storage"]["reachable"] is True
-    assert body["storage"]["backend"] == "local"
+    # Read from config rather than hard-coded: the suite is run against a real
+    # S3 endpoint as well as LocalStore, and this assertion must hold for both.
+    assert body["storage"]["backend"] == STORAGE_BACKEND
     # "the migration did not run" and "the code is old" look identical from
     # outside without this.
     assert body["schema_revision"] == "0002"

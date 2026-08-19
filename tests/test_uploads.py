@@ -155,6 +155,12 @@ def test_a_run_json_manifest_is_written_beside_them():
     # A manifest is not a delivery attempt; recording one would put a phantom
     # row in the run's delivery history.
     assert "delivery_id" not in payload
+    # The manifest is written only after every artifact landed. Reading the
+    # flag off the not-yet-committed run row made every manifest in the bucket
+    # claim false -- exactly backwards for the one document someone reads when
+    # the webhook was lost for good.
+    assert payload["artifacts_uploaded"] is True
+    assert payload["artifacts_error"] is None
     assert get_store().head(f"runs/{run_id}/run.json") is not None
 
 

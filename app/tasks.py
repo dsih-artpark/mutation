@@ -419,6 +419,13 @@ def _write_run_manifest(run_id: str, store) -> str | None:
 
     payload.pop("delivery_id", None)
     payload.pop("attempt", None)
+    # Written only after every artifact has landed, so by construction they are
+    # uploaded -- the run row simply is not committed until after this returns.
+    # Reading the flag straight off the uncommitted row made every manifest in
+    # the bucket claim false, which is exactly backwards for the one document
+    # someone reads when the webhook was lost.
+    payload["artifacts_uploaded"] = True
+    payload["artifacts_error"] = None
 
     path = RunPaths.for_run(RUNS_ROOT, run_id).root / "run.json"
     try:
