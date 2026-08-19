@@ -31,7 +31,7 @@ from ..config import (
     MAX_STAGE_MEMORY_GB,
     STATS_SAMPLE_INTERVAL_S,
 )
-from .spec import CompletedStage, StageFailed, StageSpec, StageTimeout
+from .spec import CompletedStage, PreflightFailed, StageFailed, StageSpec, StageTimeout
 
 _ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _UNSAFE_NAME = re.compile(r"[^a-zA-Z0-9_.-]")
@@ -292,3 +292,44 @@ def _tail(path: Path, limit: int = 4000) -> str:
         return ""
     text = data.decode("utf-8", errors="replace")
     return text[-limit:] if len(text) > limit else text
+
+
+# ==========================================================================
+# Preflight
+# ==========================================================================
+
+def preflight(images: list[str], stage: str = "fetch") -> None:
+    """Confirm every image this run needs is already on the host.
+
+    Lives here because this module is the only one permitted to start a
+    process -- the same rule that keeps every container invocation auditable in
+    one file.
+
+    Without this, a missing image surfaces at stage five, twenty minutes into a
+    run, as a Docker error about a container that no longer exists. With it the
+    run fails in about a second, naming the image and the command that fixes
+    it. The check is cheap because `image inspect` is local metadata: it never
+    contacts a registry, so a preflight pass does not mean the image can be
+    pulled, only that it is already here -- which is the property that matters
+    on a box that pre-pulls.
+    """
+    missing = []
+    for image in images:
+        try:
+            result = subprocess.run(
+                [DOCKER_BIN, "image", "inspect", image],
+                capture_output=True, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise PreflightFailed(
+                stage, f"could not query the Docker daemon: {type(exc).__name__}: {exc}"
+            ) from exc
+        if result.returncode != 0:
+            missing.append(image)
+
+    if missing:
+        raise PreflightFailed(
+            stage,
+            f"image(s) not present on this host: {', '.join(sorted(missing))}. "
+            f"Run 'make images-pull'.",
+        )

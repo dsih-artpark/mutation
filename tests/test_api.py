@@ -182,13 +182,12 @@ def test_unknown_pipeline_submission_is_404(client):
 def test_run_succeeds_and_records_stages(client, completed_run):
     body = client.get(f"/v1/runs/{completed_run}").json()
     assert body["status"] == "SUCCEEDED"
-    assert [s["name"] for s in body["stages"]] == ["prepare", "call"]
+    # fetch is the platform's, prepare and call are the pipeline's.
+    assert [s["name"] for s in body["stages"]] == ["fetch", "prepare", "call"]
     assert all(s["status"] == "SUCCEEDED" for s in body["stages"])
     assert all(s["duration_s"] is not None for s in body["stages"])
-    # 2 of 4: the denominator counts fetch and publish, which the worker does
-    # not yet execute. Tasks 8 and 9 make this 4/4; until then the gap is the
-    # honest reading -- the stages are declared and not yet run.
-    assert body["progress"] == "2/4"
+    # 3 of 4: publish is declared and not yet executed. Task 9 makes this 4/4.
+    assert body["progress"] == "3/4"
 
 
 def test_hostile_filename_is_normalised_on_disk(client):
@@ -257,7 +256,10 @@ def test_tool_failure_is_recorded_with_the_log_tail(client):
     assert body["status"] == "FAILED"
     assert "exit code 3" in body["error_message"]
     assert "tool exploded" in body["error_message"], "log tail not captured"
-    assert body["stages"][0]["status"] == "FAILED"
+    # stages[0] is now the platform's fetch, which succeeded. The FAILED one is
+    # the pipeline stage that actually broke.
+    assert body["stages"][0]["name"] == "fetch"
+    assert [s["status"] for s in body["stages"]][-1] == "FAILED"
 
 
 def test_redeliver_rejects_a_run_with_no_callback(client, completed_run):

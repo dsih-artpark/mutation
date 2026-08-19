@@ -7,6 +7,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 
 from .config import (
+    MAX_INPUT_BYTES,
     REFS_ROOT,
     RETENTION_HOURS,
     RUNS_ROOT,
@@ -15,6 +16,7 @@ from .config import (
 )
 from .db import session_scope
 from .delivery import build_payload, post
+from .storage import StorageError, get_store
 from .models import (
     DeliveryStatus,
     Run,
@@ -26,8 +28,10 @@ from .models import (
     utcnow,
 )
 from .pipelines import registry
+from .pipelines.base import FETCH_STAGE
 from .runtime.context import RunContext, RunPaths
-from .runtime.spec import StageError
+from .runtime.runner import preflight
+from .runtime.spec import InputUnavailable, PreflightFailed, StageError
 from .worker import celery
 
 
@@ -119,6 +123,8 @@ def execute_run(self, run_id: str) -> dict:
         input_filename = run.input_filename
         stored_name = (run.params or {}).get("_input_name")
         extra_inputs = (run.params or {}).get("_extra_inputs", {})
+        input_key = run.input_key
+        extra_input_keys = dict(run.extra_input_keys or {})
 
     pipeline = registry.get(pipeline_id)
     paths = RunPaths.for_run(RUNS_ROOT, run_id).create()
@@ -126,19 +132,32 @@ def execute_run(self, run_id: str) -> dict:
     # Strip the reserved bookkeeping keys before the pipeline sees its params.
     clean_params = {k: v for k, v in params.items() if not k.startswith("_")}
 
+    # An object-store run writes every input under the pipeline's own declared
+    # name; only the legacy multipart path carries a separately stored name.
+    if input_key:
+        stored_name = pipeline.input_filename
+        extra_inputs = {
+            key: pipeline.extra_inputs[key].filename
+            for key in extra_input_keys
+            if key in pipeline.extra_inputs
+        }
+
     ctx = RunContext(
         run_id=run_id,
         params=clean_params,
         paths=paths,
         refs_dir=REFS_ROOT,
         recorder=DbRecorder(run_id),
-        stages=list(pipeline.stages),
+        stages=list(pipeline.effective_stages),
         input_name=stored_name or pipeline.input_filename,
         extra_inputs=extra_inputs,
     )
 
     failure: tuple[str | None, str] | None = None
     try:
+        with ctx.stage(FETCH_STAGE):
+            preflight(pipeline.required_images(), stage=FETCH_STAGE)
+            _fetch_inputs(ctx, pipeline, input_key, extra_input_keys)
         result = pipeline.run(ctx)
     except StageError as exc:
         failure = (getattr(exc, "stage", None), str(exc))
@@ -156,6 +175,46 @@ def execute_run(self, run_id: str) -> dict:
 
     _enqueue_delivery(run_id)
     return {"run_id": run_id, "status": status}
+
+
+def _fetch_inputs(ctx: RunContext, pipeline, input_key: str | None,
+                  extra_input_keys: dict[str, str]) -> None:
+    """Bring every declared input onto local disk under its normalised name.
+
+    The client's filename never reaches this. Destinations come from
+    `pipeline.input_filename` and `extra_inputs[key].filename`, both of which
+    the contract test forbids from containing a path separator, so traversal
+    via a crafted object key is structurally impossible rather than defended
+    against.
+
+    A run with no `input_key` came through the legacy multipart path and
+    already has its file on disk. Task 12 removes that path; until then this
+    is what lets both submission shapes execute identically.
+    """
+    if not input_key:
+        return
+
+    store = get_store()
+    wanted: list[tuple[str, str]] = [(input_key, pipeline.input_filename)]
+
+    for key, object_key in extra_input_keys.items():
+        extra = pipeline.extra_inputs.get(key)
+        if extra is None:
+            raise PreflightFailed(
+                FETCH_STAGE,
+                f"run supplies extra input {key!r}, which {pipeline.id} does not declare",
+            )
+        wanted.append((object_key, extra.filename))
+
+    for object_key, filename in wanted:
+        try:
+            store.download(object_key, ctx.paths.input / filename, MAX_INPUT_BYTES)
+        except StorageError as exc:
+            # Re-raised as a StageError so the run record attributes it to
+            # fetch. A StorageError reaching the generic handler produces a
+            # FAILED run with error_stage None, which says nothing about where
+            # it broke.
+            raise InputUnavailable(FETCH_STAGE, f"{object_key}: {exc}") from exc
 
 
 def _persist_result(run_id, pipeline, result, failure, input_filename) -> None:

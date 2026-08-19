@@ -92,6 +92,19 @@ class Pipeline(ABC):
         worker, and exiting kills the worker rather than the task.
         """
 
+    def required_images(self) -> list[str]:
+        """Every container image this pipeline resolved, for preflight.
+
+        Read from the resolver rather than declared separately, because a
+        second list would drift from the specs it is supposed to describe.
+        `img()` records each reference under the requesting scope as the
+        pipeline's specs module is imported, and the contract test already
+        asserts that scope equals `id`.
+        """
+        from ..runtime.images import resolver
+
+        return sorted(resolver.refs_for(self.id))
+
     # -- introspection -----------------------------------------------------
 
     @property

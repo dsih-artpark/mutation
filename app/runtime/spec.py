@@ -84,6 +84,36 @@ class StageTimeout(StageError):
         super().__init__(f"stage '{stage}' exceeded its {timeout_s}s timeout\n{log_tail}")
 
 
+class PreflightFailed(StageError):
+    """A precondition for running this pipeline is not met on this host.
+
+    Raised before any tool starts, so a missing image costs a second rather
+    than surfacing at stage five as an opaque Docker error against data that
+    is perfectly fine. Subclasses StageError so it flows through the existing
+    failure, recording and webhook paths with no new code.
+    """
+
+    def __init__(self, stage: str, message: str):
+        self.stage = stage
+        super().__init__(message)
+
+
+class InputUnavailable(StageError):
+    """An input object could not be brought onto local disk.
+
+    Deliberately a StageError and not a StorageError leaking upward: the run
+    record attributes a failure by stage, and a storage exception escaping to
+    the generic handler produced a FAILED run with error_stage None -- which
+    tells an operator nothing about where it broke. Nothing has been computed
+    at this point, so the run simply fails and a resubmission costs only the
+    transfer.
+    """
+
+    def __init__(self, stage: str, message: str):
+        self.stage = stage
+        super().__init__(message)
+
+
 class MissingOutput(StageError):
     """A stage exited zero but did not produce the file it promised.
 
