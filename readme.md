@@ -256,7 +256,7 @@ curl -X POST localhost:8000/v1/runs \
   "status": "QUEUED",
   "stages": ["fetch", "prepare", "qc", "align", "primer", "variant",
              "consensus", "annotate", "report", "publish"],
-  "queue_position": 0, "estimated_start_s": null
+  "queue_position": 0, "estimated_start_s": 0
 }
 ```
 

@@ -9,6 +9,10 @@ runs/*
 venv/
 
 *.db
+# SQLite runs in WAL mode (see app/db.py), which leaves two sidecar files
+# beside the database. Ignoring only *.db leaves them in `git status`.
+*.db-wal
+*.db-shm
 *.sqlite3
 
 # Reference indexes are regenerated per run.
