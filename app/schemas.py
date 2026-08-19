@@ -88,3 +88,4 @@ class PipelineOut(BaseModel):
     accepted_extensions: list[str]
     stages: list[str]
     params_schema: dict
+    extra_inputs: dict = {}

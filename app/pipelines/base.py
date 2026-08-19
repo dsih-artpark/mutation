@@ -9,8 +9,34 @@ no database changes.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from ..runtime.context import RunContext, RunResult
+
+# Prepended and appended by the platform to every pipeline's declared stages.
+# Reserved: tests/contract.py rejects a pipeline that declares either.
+FETCH_STAGE = "fetch"
+PUBLISH_STAGE = "publish"
+
+
+@dataclass(frozen=True)
+class ExtraInput:
+    """A secondary file a pipeline accepts alongside its primary input.
+
+    Declared rather than hardcoded in the API, which is what removes
+    `primer_bed` from the submit endpoint's signature: a pipeline needing a
+    different secondary file becomes a backend-only change, and Dharini renders
+    the extra file picker from `describe()` exactly as it renders the parameter
+    form from `params_schema`.
+    """
+
+    filename: str
+    """Normalised name on disk. Client filenames never reach a tool."""
+
+    extensions: tuple[str, ...] = ()
+    required: bool = False
+    title: str = ""
+    description: str = ""
 
 
 class Pipeline(ABC):
@@ -48,6 +74,13 @@ class Pipeline(ABC):
     """Declared up front so progress reads `4/7 · consensus` from the moment a
     run is queued, rather than a binary PENDING/SUCCESS."""
 
+    extra_inputs: dict[str, ExtraInput] = {}
+    """Secondary inputs, keyed by the name used in `extra_input_keys` and in
+    `ctx.extra_input(key)`. A plain class-level dict, not a dataclass field
+    with a factory: nothing mutates it at runtime, and every subclass either
+    leaves the base's shared empty dict alone or overrides the attribute
+    entirely, so there is no aliasing hazard to guard against."""
+
     # -- execution ---------------------------------------------------------
 
     @abstractmethod
@@ -61,6 +94,16 @@ class Pipeline(ABC):
 
     # -- introspection -----------------------------------------------------
 
+    @property
+    def effective_stages(self) -> tuple[str, ...]:
+        """What actually runs, including the platform's own bookends.
+
+        `stages` is what the author declared; this is what a client should see.
+        A 90-second fetch and a four-minute publish are otherwise invisible, and
+        a run reporting 0/8 for ninety seconds looks hung rather than busy.
+        """
+        return (FETCH_STAGE, *self.stages, PUBLISH_STAGE)
+
     def describe(self) -> dict:
         return {
             "id": self.id,
@@ -68,6 +111,16 @@ class Pipeline(ABC):
             "display_name": self.display_name,
             "description": self.description,
             "accepted_extensions": list(self.accepted_extensions),
-            "stages": list(self.stages),
+            "stages": list(self.effective_stages),
             "params_schema": self.params_schema,
+            "extra_inputs": {
+                key: {
+                    "filename": extra.filename,
+                    "extensions": list(extra.extensions),
+                    "required": extra.required,
+                    "title": extra.title,
+                    "description": extra.description,
+                }
+                for key, extra in self.extra_inputs.items()
+            },
         }

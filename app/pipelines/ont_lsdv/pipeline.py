@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from ...runtime.context import RunContext, RunResult
 from ...vcf import parse_annotated_vcf, summarise
-from ..base import Pipeline
+from ..base import ExtraInput, Pipeline
 from ..registry import registry
 from . import align, annotate, common, consensus, primer, qc, report, variant
 
@@ -30,6 +30,19 @@ class OntLsdvPipeline(Pipeline):
     input_filename = "reads.fastq.gz"
 
     stages = ["prepare", "qc", "align", "primer", "variant", "consensus", "annotate", "report"]
+
+    extra_inputs = {
+        "primer_bed": ExtraInput(
+            filename="primers.bed",
+            extensions=(".bed",),
+            required=False,
+            title="ARTIC primer scheme",
+            description=(
+                "Required only when primer trimming is enabled. Contig names and "
+                "coordinates must match the reference exactly."
+            ),
+        ),
+    }
 
     params_schema = {
         "type": "object",

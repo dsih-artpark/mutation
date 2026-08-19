@@ -135,3 +135,53 @@ def test_snippy_resources_are_clamped_to_what_the_container_grants(tmp_path):
 
     assert told_cpus <= MAX_STAGE_CPUS
     assert told_ram < granted_gb, "snippy was promised the whole container, leaving no headroom"
+
+
+def test_effective_stages_bookend_the_declared_ones():
+    """The platform fetches before and publishes after every pipeline, and both
+    are visible as stages so a 90-second download does not look like a hang."""
+    from app.pipelines.base import Pipeline
+
+    class _P(Pipeline):
+        id = "x"
+        stages = ["a", "b"]
+
+        def run(self, ctx):
+            raise NotImplementedError
+
+    assert _P().effective_stages == ("fetch", "a", "b", "publish")
+
+
+def test_describe_reports_the_effective_stages():
+    """The denominator a client polls must match what actually runs."""
+    from app.pipelines import registry
+
+    described = registry.get("ont-lsdv").describe()
+    assert described["stages"][0] == "fetch"
+    assert described["stages"][-1] == "publish"
+
+
+def test_ont_lsdv_declares_its_primer_bed_as_an_extra_input():
+    """Replaces the hardcoded `primer_bed` parameter on the submit endpoint."""
+    from app.pipelines import registry
+
+    extras = registry.get("ont-lsdv").extra_inputs
+    assert "primer_bed" in extras
+    assert extras["primer_bed"].filename == "primers.bed"
+    assert extras["primer_bed"].required is False
+    assert ".bed" in extras["primer_bed"].extensions
+
+
+def test_a_pipeline_declaring_a_reserved_stage_fails_the_contract():
+    from tests.contract import _assert_stages
+    from app.pipelines.base import Pipeline
+
+    class _Clash(Pipeline):
+        id = "clash"
+        stages = ["publish"]
+
+        def run(self, ctx):
+            raise NotImplementedError
+
+    with pytest.raises(AssertionError, match="reserved"):
+        _assert_stages(_Clash())

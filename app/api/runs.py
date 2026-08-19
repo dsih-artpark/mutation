@@ -117,7 +117,7 @@ async def create_run(
         pipeline_id=pipeline.id,
         pipeline_version=pipeline.version,
         status=run.status.value,
-        stages=list(pipeline.stages),
+        stages=list(pipeline.effective_stages),
         queue_position=queued_before,
     )
 
@@ -156,7 +156,7 @@ def get_run(run_id: str, session: Session = Depends(get_session)):
     if run is None:
         raise HTTPException(404, f"unknown run: {run_id}")
 
-    total = len(registry.get(run.pipeline_id).stages) if run.pipeline_id in registry else 0
+    total = len(registry.get(run.pipeline_id).effective_stages) if run.pipeline_id in registry else 0
     done = sum(1 for stage in run.stages if stage.status.value in ("SUCCEEDED", "SKIPPED"))
     current = next((s.name for s in run.stages if s.status.value == "RUNNING"), None)
 

@@ -17,7 +17,7 @@ from app.runtime.images import resolver
 from app.runtime.manifest import discover_manifests
 
 KEBAB = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
-RESERVED_STAGES = {"fetch"}
+RESERVED_STAGES = {"fetch", "publish"}
 ACCESSION = re.compile(r"\b[A-Z]{1,2}_?\d{5,9}(\.\d+)?\b")
 
 # Spec §5.1: an empty `sha256` means "not yet pinned", and the contract rejects
@@ -102,6 +102,16 @@ def _assert_filenames(pipeline) -> None:
     assert name and "/" not in name and "\\" not in name, (
         f"{pipeline.id}: input_filename {name!r} may not contain a path separator"
     )
+
+    for key, extra in pipeline.extra_inputs.items():
+        assert extra.filename and "/" not in extra.filename and "\\" not in extra.filename, (
+            f"{pipeline.id}: extra_inputs[{key!r}].filename {extra.filename!r} "
+            f"may not contain a path separator"
+        )
+        assert extra.extensions, (
+            f"{pipeline.id}: extra_inputs[{key!r}] declares no extensions, so the "
+            f"API cannot reject the wrong file type before a run is queued"
+        )
 
 
 def _unpinned_assets_allowed() -> bool:
