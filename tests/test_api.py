@@ -367,3 +367,37 @@ def test_health_reports_disk(client):
     assert body["status"] == "ok"
     assert body["disk"]["free_gb"] > 0
     assert body["pipelines"] >= 2
+
+
+def test_health_probes_storage_and_schema(client):
+    """Credentials failing at 02:00 on a run that has been computing for forty
+    minutes should not be the first sign of a misconfiguration."""
+    body = client.get("/health").json()
+    assert body["storage"]["reachable"] is True
+    assert body["storage"]["backend"] == "local"
+    # "the migration did not run" and "the code is old" look identical from
+    # outside without this.
+    assert body["schema_revision"] == "0002"
+
+
+def test_health_stays_200_when_storage_is_unreachable(client, monkeypatch):
+    """Taking every instance out of rotation because a dependency blipped turns
+    a degradation into an outage. The body says which it is."""
+    import app.main
+
+    monkeypatch.setattr(app.main, "_storage_probe", None)
+    monkeypatch.setattr(app.main, "get_store",
+                        lambda: (_ for _ in ()).throw(RuntimeError("no credentials")))
+
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["storage"]["reachable"] is False
+    assert "no credentials" in response.json()["storage"]["error"]
+
+    monkeypatch.setattr(app.main, "_storage_probe", None)
+
+
+def test_health_needs_no_credential(client):
+    """The load balancer has no API key. An empty one must not 401 it either."""
+    assert client.get("/health", headers={"X-API-Key": ""}).status_code == 200
+    assert client.get("/").status_code == 200
