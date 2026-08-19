@@ -812,3 +812,43 @@ Continuing the parent spec's numbering. Gates are blocking.
 | Visibility while queued | a stale number | live position and estimated start |
 | Cost of a transient S3 failure after compute | n/a | one retry, not one re-run |
 | Pipeline author changes | — | none |
+
+---
+
+## 24. As built
+
+Recorded after implementation so this document does not quietly disagree with
+the code. Everything in §1–§23 landed as specified except the following.
+
+### Corrections to the design
+
+| Ref | Specified | Built | Why |
+|---|---|---|---|
+| §16 | "a run whose artifacts are not in S3 is never purged" | Scoped to runs with a non-null `input_key` | Every run predating this change has `artifacts_uploaded` false and will never be published. The rule as written exempted all of them from retention permanently — a disk leak that would have surfaced weeks after deploy, not at it. A pre-existing run keeps the contract it was created under. |
+| §11 | `run.json` is the same document as the webhook payload | Same, but with `artifacts_uploaded` forced true and the delivery fields removed | The manifest is written before the run row commits, so reading the flag off that row made every manifest claim false while sitting beside the artifacts it had just published. It is only written after all artifacts land, so the value is true by construction. |
+| §9 | `S3_SSE` always sent | Omitted when empty | AWS has encrypted new objects with SSE-S3 since January 2023, so the header is redundant there, and an S3-compatible store without KMS rejects it outright. Production still sets `AES256`. |
+
+### Defects found during implementation
+
+Each was found by a test, not by review. Listed because each is a class of
+mistake worth watching for in the next phase.
+
+1. **`boto3.exceptions.S3UploadFailedError` inherits from neither `ClientError` nor `BotoCoreError`.** `upload_file` wraps failures in it, so catching the two botocore bases let a failed upload escape `storage.upload()` un-wrapped — the worker's `except StorageError` retry path would never have seen it, and the task would have crashed instead of backing off. The entire retry design in §11 was inert against its most likely trigger. Found only by running `S3Store` against a real S3 API.
+2. **A single non-ASCII byte in `X-API-Key` returned 500, not 401.** `hmac.compare_digest` refuses two `str` arguments unless both are ASCII, and Starlette decodes header bytes as latin-1. Any client could trigger it with one header and no credentials. Compared as bytes now.
+3. **`PyJWKClient` was constructed without a timeout**, which means urllib's: none. A JWKS host that accepts a connection and stalls would pin a worker thread per request until the pool was gone — the component that authenticates browsers taking down the whole API.
+4. **Storage errors were not attributed to a stage.** `ObjectNotFound` reached the generic handler, producing a `FAILED` run with `error_stage` null, which tells an operator nothing. Now `InputUnavailable`, a `StageError`.
+5. **`.vcf` was published as `text/x-vcard`.** Python's `mimetypes` table predates every format here and maps Variant Call Format to a vCard contact card. That value is stored as object metadata and decides what a browser does on download.
+6. **Naive/aware datetime subtraction.** SQLite drops `tzinfo` on a `DateTime(timezone=True)` round trip and Postgres does not, so subtracting a stored timestamp from a live `utcnow()` raised `TypeError` on the test backend only.
+
+### Added beyond the spec
+
+- **`tests/test_storage_s3.py`** — `S3Store` against a real S3 API. `LocalStore` was carrying the whole suite, so the only backend that runs in production had no test. It found defect 1.
+- **`/health` storage probe and `schema_revision`** (§17 called for the probe; the revision was not specified). Without the latter, "the migration did not run" and "the code is old" are indistinguishable from outside.
+- **Genomics content types** in `runtime/context.py`, matched suffix-wise from the right so `snps.vcf.gz` is gzip rather than plain text.
+
+### Gates still outstanding
+
+**G10** (IAM negative test from the instance), **G11** against a real production
+dump — the mechanism is verified on a populated Postgres, but not against your
+data — **G12** (a multi-GB `ont-lsdv` run), **G13** (lifecycle noncurrent-version
+expiry), and **G9** (deploying with the frontend). None can be closed from here.
