@@ -7,129 +7,198 @@ schema, so a new pipeline needs no new route.
 
 from __future__ import annotations
 
-import json
-import shutil
-import uuid
-from pathlib import Path
-
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..auth import Principal, require_principal, require_service
-from ..config import MAX_UPLOAD_BYTES, PUBLIC_BASE_URL, RUNS_ROOT
+from ..config import MAX_INPUT_BYTES, PUBLIC_BASE_URL, RUNS_ROOT
 from ..db import get_session
 from ..delivery import CallbackRejected, validate_callback_url
 from ..models import DeliveryStatus, Run, RunStatus, WebhookDelivery, utcnow
 from ..pipelines import ParamsInvalid, PipelineNotFound, registry
-from ..progress import build_progress
+from ..progress import build_progress, queue_snapshot
 from ..runtime.context import RunPaths
-from ..schemas import ProgressOut, RunAccepted, RunDetail, RunSummary
+from ..storage import KeyRejected, StorageError, get_store, validate_input_key
+from ..schemas import ProgressOut, RunAccepted, RunDetail, RunRequest, RunSummary
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
-
-_CHUNK = 1024 * 1024
-
 
 # ==========================================================================
 # Submission
 # ==========================================================================
 
 @router.post("", response_model=RunAccepted, status_code=202)
-async def create_run(
-    pipeline_id: str = Form(..., description="Pipeline id, e.g. 'ont-lsdv'"),
-    file: UploadFile = File(..., description="Primary input (FASTA or FASTQ)"),
-    params: str = Form("{}", description="JSON object matching the pipeline's params_schema"),
-    callback_url: str | None = Form(None, description="Webhook called when the run finishes"),
-    primer_bed: UploadFile | None = File(None, description="Optional ARTIC primer scheme BED"),
+def create_run(
+    request: RunRequest,
+    response: Response,
     session: Session = Depends(get_session),
+    principal: Principal = Depends(require_service),
 ):
+    """Queue a run over an object already in storage.
+
+    Every check below runs before anything is enqueued, cheapest first, so the
+    common mistakes cost no network call and a bad submission is an error in
+    milliseconds rather than a failure twenty minutes into a run.
+
+    Service credential only. `params`, `input_key` and above all `callback_url`
+    are trust-sensitive: letting a browser choose the callback URL would
+    re-open the SSRF hole validate_callback_url exists to close, wearing a
+    valid user's token.
+    """
+    # 1. Idempotency, before any work at all. A caller that timed out and
+    #    retried gets its original run rather than a second hour of compute.
+    existing = (
+        session.query(Run).filter(Run.external_id == request.external_id).one_or_none()
+    )
+    if existing is not None:
+        response.status_code = 200
+        return _accepted(existing, registry.get(existing.pipeline_id), session)
+
+    # 2. Pipeline.
     try:
-        pipeline = registry.get(pipeline_id)
+        pipeline = registry.get(request.pipeline_id)
     except PipelineNotFound:
         known = ", ".join(p.id for p in registry.all())
-        raise HTTPException(404, f"unknown pipeline '{pipeline_id}'. Available: {known}") from None
+        raise HTTPException(
+            404, f"unknown pipeline '{request.pipeline_id}'. Available: {known}"
+        ) from None
 
+    # 3. Params, against the pipeline's own schema.
     try:
-        parsed_params = json.loads(params) if params else {}
-    except ValueError as exc:
-        raise HTTPException(422, f"params is not valid JSON: {exc}") from None
-    if not isinstance(parsed_params, dict):
-        raise HTTPException(422, "params must be a JSON object")
-
-    # Validated before anything is written to disk or enqueued, so a bad
-    # parameter is a fast 422 rather than a job that dies mid-pipeline.
-    try:
-        validated = registry.validate_params(pipeline_id, parsed_params)
+        validated = registry.validate_params(request.pipeline_id, request.params)
     except ParamsInvalid as exc:
         raise HTTPException(422, {"message": "invalid params", "errors": exc.errors}) from None
 
+    # 4. Callback URL. Attacker-influenced input reaching a worker inside the VPC.
+    callback_url = request.callback_url
     if callback_url:
         try:
             callback_url = validate_callback_url(callback_url)
         except CallbackRejected as exc:
             raise HTTPException(422, f"callback_url rejected: {exc}") from None
 
-    _check_extension(file.filename or "", pipeline.accepted_extensions)
+    # 5. Keys: well-formed and under the configured prefix.
+    try:
+        input_key = validate_input_key(request.input_key)
+        extra_keys = {
+            key: validate_input_key(value)
+            for key, value in request.extra_input_keys.items()
+        }
+    except KeyRejected as exc:
+        raise HTTPException(422, f"input key rejected: {exc}") from None
+
+    # 6. Extra inputs the pipeline actually declares.
+    _check_extra_inputs(pipeline, extra_keys)
+
+    # 7. Extensions, from the display filename when given, else the key.
+    display_name = request.input_filename or input_key.rsplit("/", 1)[-1]
+    _check_extension(display_name, pipeline.accepted_extensions, "input")
+    for key, object_key in extra_keys.items():
+        _check_extension(
+            object_key.rsplit("/", 1)[-1], pipeline.extra_inputs[key].extensions, key
+        )
+
+    # 8/9. Existence and size. The only network call in the ladder, and the
+    #      reason a typo'd key is an instant error instead of a run that queues,
+    #      waits behind three others, and dies twenty minutes later.
+    input_bytes = _head_or_reject(input_key)
+    for object_key in extra_keys.values():
+        _head_or_reject(object_key)
 
     run = Run(
         pipeline_id=pipeline.id,
         pipeline_version=pipeline.version,
-        # external_id is NOT NULL and unique -- it is meant to be the caller's
-        # own idempotency key (a retried submission should return the original
-        # run, not start a second one). Task 12 adds it to the request body;
-        # until then there is no caller-supplied value to key off, so a fresh
-        # uuid4 stands in, which satisfies the constraint without granting
-        # idempotency.
-        external_id=str(uuid.uuid4()),
+        external_id=request.external_id,
+        owner_id=request.owner_id,
+        submitted_by=principal.label,
         status=RunStatus.QUEUED,
         params=validated,
-        input_filename=file.filename,
+        input_key=input_key,
+        extra_input_keys=extra_keys,
+        input_filename=display_name,
+        input_bytes=input_bytes,
         callback_url=callback_url,
     )
     session.add(run)
-    session.flush()
 
-    paths = RunPaths.for_run(RUNS_ROOT, run.id).create()
-
-    stored_name = _stored_name(pipeline.input_filename, file.filename or "")
     try:
-        written = await _save_upload(file, paths.input / stored_name)
-    except ValueError as exc:
-        shutil.rmtree(paths.root, ignore_errors=True)
-        raise HTTPException(413, str(exc)) from None
+        session.commit()
+    except IntegrityError:
+        # Two concurrent submissions of the same external_id. The unique index
+        # is the authority, not the SELECT above -- checking first and inserting
+        # second is a race, and losing it must still return the original run.
+        session.rollback()
+        existing = (
+            session.query(Run).filter(Run.external_id == request.external_id).one()
+        )
+        response.status_code = 200
+        return _accepted(existing, pipeline, session)
 
-    extra_inputs: dict[str, str] = {}
-    if primer_bed is not None and primer_bed.filename:
-        # Dharini already posts this field as `primer_bed`, so the name stays
-        # even though the file it carries is now an ARTIC primer scheme.
-        await _save_upload(primer_bed, paths.input / "primers.bed")
-        extra_inputs["primer_bed"] = "primers.bed"
+    from ..tasks import execute_run
 
-    # Reserved keys are stripped before the pipeline sees its params.
-    run.params = {**validated, "_input_name": stored_name, "_extra_inputs": extra_inputs}
-    run.input_bytes = written
+    execute_run.apply_async(args=[run.id], task_id=run.id)
+    return _accepted(run, pipeline, session)
 
+
+def _accepted(run: Run, pipeline, session: Session) -> RunAccepted:
     queued_before = (
         session.query(Run)
         .filter(Run.status == RunStatus.QUEUED, Run.created_at < run.created_at)
         .count()
     )
-
-    session.commit()
-
-    from ..tasks import execute_run
-
-    execute_run.apply_async(args=[run.id], task_id=run.id)
-
+    wait = queue_snapshot(session, include_running=False).get("estimated_wait_s")
     return RunAccepted(
         run_id=run.id,
+        external_id=run.external_id,
         pipeline_id=pipeline.id,
         pipeline_version=pipeline.version,
         status=run.status.value,
         stages=list(pipeline.effective_stages),
         queue_position=queued_before,
+        estimated_start_s=wait,
     )
+
+
+def _check_extra_inputs(pipeline, supplied: dict[str, str]) -> None:
+    """Every supplied extra is declared, and every required one is supplied."""
+    declared = pipeline.extra_inputs
+    unknown = sorted(set(supplied) - set(declared))
+    if unknown:
+        raise HTTPException(
+            422,
+            f"{pipeline.id} declares no extra input(s) {', '.join(unknown)}. "
+            f"Declared: {', '.join(sorted(declared)) or '(none)'}",
+        )
+
+    missing = sorted(
+        key for key, extra in declared.items() if extra.required and key not in supplied
+    )
+    if missing:
+        raise HTTPException(422, f"{pipeline.id} requires extra input(s): {', '.join(missing)}")
+
+
+def _head_or_reject(key: str) -> int:
+    """Confirm the object exists and is within the size ceiling.
+
+    422 rather than 404: the route exists and the request is well-formed but
+    unprocessable, and a 404 on a POST reads as a missing endpoint.
+    """
+    try:
+        info = get_store().head(key)
+    except StorageError as exc:
+        raise HTTPException(422, f"could not read '{key}': {exc}") from None
+
+    if info is None:
+        raise HTTPException(422, {"message": "input object not found", "key": key})
+    if info.size > MAX_INPUT_BYTES:
+        raise HTTPException(
+            413,
+            f"'{key}' is {info.size / 10**9:.1f} GB, over the "
+            f"{MAX_INPUT_BYTES / 10**9:.1f} GB limit",
+        )
+    return info.size
 
 
 # ==========================================================================
@@ -333,51 +402,17 @@ def _summary(run: Run) -> RunSummary:
     )
 
 
-def _check_extension(filename: str, accepted: tuple[str, ...]) -> None:
+def _check_extension(filename: str, accepted: tuple[str, ...], label: str) -> None:
     if not accepted:
         return
     lowered = filename.lower()
     if not any(lowered.endswith(ext) for ext in accepted):
         raise HTTPException(
             422,
-            f"'{filename}' is not an accepted input for this pipeline. "
+            f"'{filename}' is not an accepted {label} for this pipeline. "
             f"Expected one of: {', '.join(accepted)}",
         )
 
-
-def _stored_name(declared: str, original: str) -> str:
-    """Normalise the on-disk name, preserving only whether it is compressed.
-
-    Client filenames carry spaces, unicode and shell metacharacters; none of
-    that should ever reach a tool command line. The original is kept as run
-    metadata for display.
-    """
-    if declared.endswith(".gz") and not original.lower().endswith(".gz"):
-        return declared[:-3]
-    return declared
-
-
-async def _save_upload(upload: UploadFile, destination: Path) -> int:
-    """Stream to disk, enforcing the size cap as we go.
-
-    Checked during the write rather than from Content-Length, which a client
-    controls and can understate.
-    """
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    written = 0
-
-    with open(destination, "wb") as out:
-        while chunk := await upload.read(_CHUNK):
-            written += len(chunk)
-            if written > MAX_UPLOAD_BYTES:
-                out.close()
-                destination.unlink(missing_ok=True)
-                raise ValueError(
-                    f"upload exceeds the {MAX_UPLOAD_BYTES / 10**9:.1f} GB limit"
-                )
-            out.write(chunk)
-
-    return written
 
 
 @router.post("/{run_id}/reupload", status_code=202, dependencies=[Depends(require_service)])

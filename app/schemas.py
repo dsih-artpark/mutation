@@ -4,7 +4,63 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class RunRequest(BaseModel):
+    """A submission. The file already exists in object storage.
+
+    Streaming a gigabyte through this process a second time bought nothing but
+    a timeout risk and a second copy on local disk, so the client uploads to
+    storage first and sends the key.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pipeline_id: str = Field(description="Pipeline id, e.g. 'ont-lsdv'")
+
+    external_id: str = Field(
+        max_length=128,
+        description=(
+            "Unique per run, chosen by the caller BEFORE submitting. Carries a "
+            "unique constraint: resubmitting one returns the original run "
+            "instead of starting a second. It is also what lets a caller "
+            "correlate the eventual webhook when the 202 was lost."
+        ),
+    )
+
+    input_key: str = Field(description="Object key of the primary input")
+
+    owner_id: str | None = Field(
+        default=None, max_length=128,
+        description=(
+            "Which of the caller's users this run belongs to. A browser token "
+            "may read only its own runs; a service key sees every run."
+        ),
+    )
+
+    input_filename: str | None = Field(
+        default=None, max_length=512,
+        description=(
+            "The user's original filename, kept as display metadata only. The "
+            "file on disk is normalised to the pipeline's own name, so a "
+            "hostile filename never reaches a tool command line."
+        ),
+    )
+
+    extra_input_keys: dict[str, str] = Field(
+        default_factory=dict,
+        description="Object key per declared extra input, e.g. {'primer_bed': '...'}",
+    )
+
+    params: dict = Field(
+        default_factory=dict,
+        description="Validated against the pipeline's params_schema before queueing",
+    )
+
+    callback_url: str | None = Field(
+        default=None, description="Webhook called when the run reaches a terminal state"
+    )
 
 
 class StageOut(BaseModel):
@@ -73,11 +129,13 @@ class RunDetail(RunSummary):
 
 class RunAccepted(BaseModel):
     run_id: str
+    external_id: str
     pipeline_id: str
     pipeline_version: str
     status: str
     stages: list[str]
     queue_position: int | None = None
+    estimated_start_s: float | None = None
 
 
 class StageProgressOut(BaseModel):

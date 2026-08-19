@@ -278,5 +278,3 @@ ETA_CACHE_TTL_S = int(os.getenv("ETA_CACHE_TTL_S", "60"))
 # Upload limits
 # --------------------------------------------------------------------------
 
-# Task 12 removes this alias once app/api/runs.py moves off it.
-MAX_UPLOAD_BYTES = MAX_INPUT_BYTES

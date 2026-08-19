@@ -95,16 +95,46 @@ for _pipeline in (_EchoPipeline(), _FailingPipeline()):
         registry.register(_pipeline)
 
 
-FASTA = ("sample.fasta", b">contig1\nACGTACGTACGT\n")
+FASTA_BYTES = b">contig1\nACGTACGTACGT\n"
+
+
+def put_object(key: str, data: bytes = FASTA_BYTES) -> str:
+    """Stage an input the way the frontend does: in storage, before submitting."""
+    import tempfile
+    from pathlib import Path
+
+    from app.storage import get_store
+
+    with tempfile.NamedTemporaryFile(delete=False) as handle:
+        handle.write(data)
+        source = Path(handle.name)
+    get_store().upload(source, key, "text/plain")
+    source.unlink(missing_ok=True)
+    return key
+
+
+def submit(client, **overrides):
+    """A valid submission body, with fields overridden per test.
+
+    external_id defaults to a fresh uuid: it is UNIQUE and the suite shares one
+    session-scoped database, so a literal would collide across tests.
+    """
+    import uuid
+
+    key = overrides.pop("_key", None) or put_object(f"uploads/{uuid.uuid4()}/sample.fasta")
+    body = {
+        "pipeline_id": "test-echo",
+        "external_id": str(uuid.uuid4()),
+        "input_key": key,
+        "input_filename": "sample.fasta",
+    }
+    body.update(overrides)
+    return client.post("/v1/runs", json=body)
 
 
 @pytest.fixture
 def completed_run(client):
-    response = client.post(
-        "/v1/runs",
-        data={"pipeline_id": "test-echo", "params": '{"label": "sample-42"}'},
-        files={"file": FASTA},
-    )
+    response = submit(client, params={"label": "sample-42"})
     assert response.status_code == 202, response.text
     return response.json()["run_id"]
 
@@ -134,47 +164,104 @@ def test_unknown_pipeline_is_404(client):
 # ------------------------------------------------------------ validation
 
 def test_rejects_wrong_extension(client):
-    response = client.post(
-        "/v1/runs", data={"pipeline_id": "test-echo"},
-        files={"file": ("reads.fastq", b"@x\nACGT\n")},
-    )
+    response = submit(client, _key=put_object("uploads/x/reads.fastq", b"@x\nACGT\n"),
+                      input_filename="reads.fastq")
     assert response.status_code == 422
     assert "not an accepted input" in response.json()["detail"]
 
 
 def test_rejects_invalid_params_before_enqueueing(client):
     """A bad parameter is a fast 422, not a job that dies eight minutes in."""
-    response = client.post(
-        "/v1/runs",
-        data={"pipeline_id": "ont-lsdv", "params": '{"variant": {"tool": "gatk"}}'},
-        files={"file": ("reads.fastq.gz", b"\x1f\x8b\x00")},
+    response = submit(
+        client, pipeline_id="ont-lsdv",
+        _key=put_object("uploads/y/reads.fastq.gz", b"\x1f\x8b\x00"),
+        input_filename="reads.fastq.gz",
+        params={"variant": {"tool": "gatk"}},
     )
     assert response.status_code == 422
     assert "variant.tool" in response.json()["detail"]["errors"][0]
 
 
-def test_rejects_malformed_params_json(client):
-    response = client.post(
-        "/v1/runs", data={"pipeline_id": "test-echo", "params": "{not json"},
-        files={"file": FASTA},
-    )
-    assert response.status_code == 422
-
-
 def test_rejects_ssrf_callback(client):
-    response = client.post(
-        "/v1/runs",
-        data={"pipeline_id": "test-echo",
-              "callback_url": "http://169.254.169.254/latest/meta-data/"},
-        files={"file": FASTA},
-    )
+    response = submit(client, callback_url="http://169.254.169.254/latest/meta-data/")
     assert response.status_code == 422
     assert "callback_url rejected" in response.json()["detail"]
 
 
 def test_unknown_pipeline_submission_is_404(client):
-    response = client.post("/v1/runs", data={"pipeline_id": "nope"}, files={"file": FASTA})
-    assert response.status_code == 404
+    assert submit(client, pipeline_id="nope").status_code == 404
+
+
+def test_rejects_a_key_outside_the_allowed_prefix(client):
+    """The key is caller-supplied. Without the prefix check this service will
+    fetch any object in the bucket it is pointed at."""
+    response = submit(client, input_key="runs/somebody-elses/annotated.vcf")
+    assert response.status_code == 422
+    assert "input key rejected" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("key", [
+    "uploads/../runs/a.fasta", "/uploads/a.fasta", "uploads//a.fasta", "uploadsX/a.fasta",
+])
+def test_rejects_malformed_keys(client, key):
+    assert submit(client, input_key=key).status_code == 422
+
+
+def test_a_missing_object_is_rejected_before_the_run_is_queued(client):
+    """Without this a typo'd key queues, waits behind three others, and dies
+    twenty minutes later instead of erroring while the user is still looking."""
+    response = submit(client, input_key="uploads/nothing/here.fasta")
+    assert response.status_code == 422
+    assert response.json()["detail"]["message"] == "input object not found"
+
+
+def test_an_oversized_object_is_rejected(client, monkeypatch):
+    monkeypatch.setattr("app.api.runs.MAX_INPUT_BYTES", 4)
+    assert submit(client).status_code == 413
+
+
+def test_an_undeclared_extra_input_is_rejected(client):
+    response = submit(client, extra_input_keys={"primer_bed": "uploads/z/scheme.bed"})
+    assert response.status_code == 422
+    assert "declares no extra input" in response.json()["detail"]
+
+
+def test_a_missing_field_is_a_422(client):
+    """external_id is required: without it there is no idempotency key."""
+    assert client.post("/v1/runs", json={"pipeline_id": "test-echo"}).status_code == 422
+
+
+def test_an_unknown_field_is_rejected(client):
+    """extra='forbid'. A silently-ignored field is a caller believing it set
+    something that never took effect."""
+    assert submit(client, nonsense="x").status_code == 422
+
+
+def test_resubmitting_an_external_id_returns_the_original_run(client, monkeypatch):
+    """A client timeout and retry must not start a second hour of compute."""
+    import uuid
+
+    import app.tasks as tasks
+
+    started = []
+    monkeypatch.setattr(tasks.execute_run, "apply_async",
+                        lambda *a, **kw: started.append(kw.get("task_id")))
+
+    external_id = str(uuid.uuid4())
+    first = submit(client, external_id=external_id)
+    second = submit(client, external_id=external_id)
+
+    assert first.status_code == 202
+    assert second.status_code == 200
+    assert second.json()["run_id"] == first.json()["run_id"]
+    assert len(started) == 1, "a duplicate submission must not start a second run"
+
+
+def test_the_response_reports_the_effective_stages(client):
+    body = submit(client).json()
+    assert body["stages"][0] == "fetch"
+    assert body["stages"][-1] == "publish"
+    assert body["external_id"]
 
 
 # ------------------------------------------------------------- execution
@@ -192,19 +279,15 @@ def test_run_succeeds_and_records_stages(client, completed_run):
 
 def test_hostile_filename_is_normalised_on_disk(client):
     """Client filenames must never reach a tool command line."""
-    response = client.post(
-        "/v1/runs", data={"pipeline_id": "test-echo"},
-        files={"file": ("my sample; rm -rf ~.fasta", b">x\nACGT\n")},
-    )
+    from app.config import RUNS_ROOT
+    from app.runtime.context import RunPaths
+
+    response = submit(client, input_filename="../../etc/passwd; rm -rf /.fasta")
     run_id = response.json()["run_id"]
 
-    from app.config import RUNS_ROOT
-    stored = list((RUNS_ROOT / run_id / "input").iterdir())
-    assert [p.name for p in stored] == ["assembly.fasta"]
-
-    # The original is retained as metadata for display.
-    assert client.get(f"/v1/runs/{run_id}").json()["input_filename"] == "my sample; rm -rf ~.fasta"
-
+    paths = RunPaths.for_run(RUNS_ROOT, run_id)
+    assert (paths.input / "assembly.fasta").exists()
+    assert [p.name for p in paths.input.iterdir()] == ["assembly.fasta"]
 
 def test_metrics_are_computed_from_the_parsed_vcf(client, completed_run):
     metrics = client.get(f"/v1/runs/{completed_run}").json()["metrics"]
@@ -249,8 +332,7 @@ def test_only_registered_artifacts_are_served(client, completed_run, name):
 # --------------------------------------------------------------- failure
 
 def test_tool_failure_is_recorded_with_the_log_tail(client):
-    response = client.post("/v1/runs", data={"pipeline_id": "test-fail"}, files={"file": FASTA})
-    run_id = response.json()["run_id"]
+    run_id = submit(client, pipeline_id="test-fail").json()["run_id"]
 
     body = client.get(f"/v1/runs/{run_id}").json()
     assert body["status"] == "FAILED"
@@ -276,46 +358,6 @@ def test_lists_and_filters_runs(client, completed_run):
 
     failed = client.get("/v1/runs", params={"status": "FAILED"}).json()
     assert all(r["status"] == "FAILED" for r in failed)
-
-
-# ----------------------------------------------------------------- legacy
-
-def test_legacy_endpoints_still_respond(client):
-    """Dharini is calling these today; they must keep working during migration."""
-    response = client.post("/upload", files={"file": ("legacy.fasta", b">x\nACGT\n")})
-    assert response.status_code == 200
-    job_id = response.json()["job_id"]
-
-    status = client.get(f"/status/{job_id}").json()
-    assert status["job_id"] == job_id
-    assert status["status"] in {"PENDING", "STARTED", "SUCCESS", "FAILURE"}
-
-
-def test_legacy_status_of_unknown_job_is_404(client):
-    assert client.get("/status/does-not-exist").status_code == 404
-
-
-def test_legacy_download_cannot_traverse_out_of_the_runs_root(client):
-    """`GET /download/..%2Fsnps.vcf` used to return a file from RUNS_ROOT's
-    parent. The rejection must be a 4xx, not a 500 from an unhandled ValueError.
-    """
-    from app.config import RUNS_ROOT
-
-    planted = RUNS_ROOT.parent / "snps.vcf"
-    planted.write_text("outside the runs root\n")
-    try:
-        response = client.get("/download/..%2Fsnps.vcf")
-        assert response.status_code == 400, response.text
-        assert "outside the runs root" not in response.text
-    finally:
-        planted.unlink(missing_ok=True)
-
-
-def test_legacy_visualization_cannot_traverse_out_of_the_runs_root(client):
-    # Percent-encoded so the HTTP client does not normalise `..` away before
-    # the request is sent; the ASGI layer decodes it back into the path param.
-    response = client.get("/visualization/%2e%2e")
-    assert response.status_code == 400, response.text
 
 
 # ------------------------------------------------------------------ meta

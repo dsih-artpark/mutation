@@ -148,7 +148,7 @@ def execute_run(self, run_id: str) -> dict:
     clean_params = {k: v for k, v in params.items() if not k.startswith("_")}
 
     # An object-store run writes every input under the pipeline's own declared
-    # name; only the legacy multipart path carries a separately stored name.
+    # name. Only a run queued before this deploy carries a separately stored one.
     if input_key:
         stored_name = pipeline.input_filename
         extra_inputs = {
@@ -206,9 +206,9 @@ def _fetch_inputs(ctx: RunContext, pipeline, input_key: str | None,
     via a crafted object key is structurally impossible rather than defended
     against.
 
-    A run with no `input_key` came through the legacy multipart path and
-    already has its file on disk. Task 12 removes that path; until then this
-    is what lets both submission shapes execute identically.
+    A run with no `input_key` predates object storage and already has its file
+    on disk. Submission no longer produces such runs, but a queued one may
+    survive the deploy, and re-running it must not fail on a missing key.
     """
     if not input_key:
         return

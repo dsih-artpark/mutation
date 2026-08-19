@@ -1,6 +1,5 @@
 fastapi==0.136.1
 uvicorn[standard]
-python-multipart==0.0.27
 celery[redis]
 redis
 python-dotenv==1.2.2
