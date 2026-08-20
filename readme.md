@@ -1625,14 +1625,30 @@ builds for aarch64 exist (1.0.9+) but snippy 4.6.0 will not accept them, and
 changing snippy's version to suit a laptop would mean local results no longer
 match what production computes — the exact thing pinning exists to prevent.
 
-**So CI runs it instead.** `.github/workflows/tests.yml` has a `snippy-fasta`
-job on an amd64 runner that executes the pipeline end to end and asserts it
-finds the three planted variants. Exit status alone is not enough there: Snippy
-can complete having called nothing, and a wrong reference or an empty alignment
-both look like success.
+**So CI is meant to run it instead** — `.github/workflows/snippy-e2e.yml`, on a
+hosted amd64 runner, executing the pipeline end to end and asserting it finds
+the three planted variants. Exit status alone is not enough there: Snippy can
+complete having called nothing, and a wrong reference or an empty alignment both
+look like success.
 
-If you are changing `snippy-fasta`, push the branch and read that job. It is the
-only place the pipeline actually runs.
+> ### ⚠ It has never passed
+>
+> Every run to date dies at `freebayes-parallel`, within about a second, on a
+> **native amd64 runner** — so whatever this is, it is not the emulation
+> problem described above. All of `freebayes-parallel`, GNU `parallel`,
+> `freebayes` and the vcflib binaries are present in the image, so it is not a
+> missing dependency either.
+>
+> Snippy writes the real error to `work/snippy/snps.log` and prints only
+> *"Error running command, check &lt;path&gt;"* to stdout, and CI was not
+> collecting that file — which is exactly why this has stayed undiagnosed. The
+> workflow now dumps it into the run log and uploads the run directory as an
+> artifact, so the next failure says what actually happened.
+>
+> **This does not gate deploys.** `deploy.yml` calls `tests.yml`, and
+> `snippy-e2e.yml` is separate — gating on a pipeline that has never passed
+> would mean no deploy could ever run. `ont-lsdv` is verified end to end and is
+> what the service runs today.
 
 ### How the dev container is wired
 
@@ -1948,11 +1964,14 @@ not a result.
    contigs do not match the reference is now rejected outright. But no run has
    ever used a genuine LSDV amplicon design, because nobody has supplied one.
    Until then, leave `primer.enabled` false.
-6. **`snippy-fasta` is only ever exercised on amd64.** Its reference-path bug is
-   fixed, and CI now runs it end to end and asserts the variant count. But no
-   Apple Silicon machine can run it — see the note above — so a developer on a
-   Mac changing that pipeline is relying entirely on CI to tell them whether it
-   works.
+6. **`snippy-fasta` does not work, anywhere.** It cannot run on Apple Silicon
+   (SIGILL in vcflib under x86 emulation), and on a native amd64 CI runner it
+   dies at `freebayes-parallel` inside a second. Every CI run of it has failed;
+   there has never been a green one, and this entry previously described that
+   job as a working safety net. The cause is not yet known — the log that would
+   say is `work/snippy/snps.log`, which CI now dumps and uploads on failure.
+   Until that is read and fixed, **treat `snippy-fasta` as unavailable**;
+   `ont-lsdv` is the pipeline that works and is verified end to end.
 7. **Variant calls have only been checked against synthetic reads.** All three
    ONT callers report exactly the planted substitutions, which proves the
    invocations, the plumbing and the resource limits. It proves nothing about

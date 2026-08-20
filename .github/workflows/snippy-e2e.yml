@@ -1,0 +1,78 @@
+# snippy-fasta, end to end, on a hosted amd64 runner.
+#
+# Its own workflow rather than a job in tests.yml, and DELIBERATELY NOT part of
+# the deploy gate. deploy.yml calls tests.yml, and this pipeline has never once
+# passed here -- so gating on it would mean no deploy could ever run. The other
+# pipeline, ont-lsdv, is verified end to end and is what the service actually
+# runs today.
+#
+# That is a statement about where the defect is, not permission to ignore it:
+# this still runs on every push and every PR, and it is still red. See "Known
+# gaps" in readme.md.
+#
+# No developer machine can run this at all. The image is linux/amd64 and the
+# vcflib binaries in it use instructions Apple Silicon's x86 emulation does not
+# implement, so snippy dies with SIGILL partway through. A native arm64 image
+# is not buildable either: snippy 4.6.0 pins vcflib <=1.0.2 and tabixpp 1.1.0,
+# and bioconda publishes no linux-aarch64 build of either.
+
+name: snippy-e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  snippy-fasta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only this pipeline's images. The full set is ~9 GB against a runner's
+      # ~14 GB of disk, and ont-lsdv is verifiable on any developer machine.
+      - run: make images-pull SCOPE=shared
+
+      - run: make fixtures
+
+      - name: Run snippy-fasta end to end and check it found the planted variants
+        run: |
+          set -o pipefail
+          make smoke PIPELINE=snippy-fasta INPUT=fixtures/query.fasta | tee smoke.log
+
+          # Exit status alone is not enough. Snippy can complete having called
+          # nothing -- a wrong reference or an empty alignment both look like
+          # success -- so assert the count. make fixtures plants exactly three
+          # substitutions and prints them.
+          found=$(sed -n 's/^ *variant_count *\([0-9]*\)$/\1/p' smoke.log)
+          if [ "$found" != "3" ]; then
+            echo "::error::expected the 3 planted variants, got '${found:-none}'"
+            exit 1
+          fi
+
+      # Snippy writes the real error to work/snippy/snps.log and prints only
+      # "Error running command, check <path>" to stdout. Without this the run
+      # log names a file nobody can read, which is how this failure stayed
+      # undiagnosed: every CI failure so far has said `freebayes-parallel`
+      # died and nothing about why.
+      - name: Collect the logs the failure points at
+        if: failure()
+        run: |
+          echo "=== snippy's own log ==="
+          find runs -name 'snps.log' -exec sh -c 'echo "--- {}"; cat {}' \; || true
+          echo "=== per-stage logs ==="
+          find runs -path '*/logs/*' -name '*.log' \
+            -exec sh -c 'echo "--- {}"; tail -50 {}' \; || true
+
+      - name: Upload the run directory
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snippy-fasta-failure
+          path: |
+            runs/**/logs/**
+            runs/**/work/snippy/snps.log
+            smoke.log
+          retention-days: 14
+          if-no-files-found: warn
