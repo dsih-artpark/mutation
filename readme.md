@@ -1041,9 +1041,24 @@ that user's deploy key, which is what lets the deploy step fetch:
 
 ```bash
 mkdir -p ~/actions-runner && cd ~/actions-runner
-curl -o runner.tar.gz -L \
-  https://github.com/actions/runner/releases/latest/download/actions-runner-linux-x64.tar.gz
+
+# linux-x64. The repository's "New self-hosted runner" page defaults to
+# whichever OS GitHub thinks you are on, and the macOS tarball installs
+# perfectly happily here -- then fails at config.sh with
+# "cannot execute binary file: Exec format error", because Runner.Listener is
+# a Mach-O binary. Read the URL before running it.
+#
+# There is no version-agnostic download: every asset name embeds the version,
+# so `releases/latest/download/actions-runner-linux-x64.tar.gz` is a 404.
+VERSION=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest \
+          | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+curl -fsSL -o runner.tar.gz \
+  "https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-linux-x64-${VERSION}.tar.gz"
 tar xzf runner.tar.gz
+
+# libicu and friends. Absent from a minimal Ubuntu cloud image, and .NET does
+# not start without them.
+sudo ./bin/installdependencies.sh
 ```
 
 Then get a registration token from **Settings → Actions → Runners → New
