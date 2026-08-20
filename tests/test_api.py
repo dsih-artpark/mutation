@@ -269,12 +269,12 @@ def test_the_response_reports_the_effective_stages(client):
 def test_run_succeeds_and_records_stages(client, completed_run):
     body = client.get(f"/v1/runs/{completed_run}").json()
     assert body["status"] == "SUCCEEDED"
-    # fetch is the platform's, prepare and call are the pipeline's.
-    assert [s["name"] for s in body["stages"]] == ["fetch", "prepare", "call"]
+    # fetch and publish are the platform's bookends; prepare and call are the
+    # pipeline's own. The denominator counts exactly what ran.
+    assert [s["name"] for s in body["stages"]] == ["fetch", "prepare", "call", "publish"]
     assert all(s["status"] == "SUCCEEDED" for s in body["stages"])
     assert all(s["duration_s"] is not None for s in body["stages"])
-    # 3 of 4: publish is declared and not yet executed. Task 9 makes this 4/4.
-    assert body["progress"] == "3/4"
+    assert body["progress"] == "4/4"
 
 
 def test_hostile_filename_is_normalised_on_disk(client):
@@ -338,10 +338,12 @@ def test_tool_failure_is_recorded_with_the_log_tail(client):
     assert body["status"] == "FAILED"
     assert "exit code 3" in body["error_message"]
     assert "tool exploded" in body["error_message"], "log tail not captured"
-    # stages[0] is now the platform's fetch, which succeeded. The FAILED one is
-    # the pipeline stage that actually broke.
-    assert body["stages"][0]["name"] == "fetch"
-    assert [s["status"] for s in body["stages"]][-1] == "FAILED"
+    # fetch succeeded, the pipeline stage broke, and publish still ran -- a
+    # failed run must still be reported, or it silently notifies nobody.
+    by_name = {s["name"]: s["status"] for s in body["stages"]}
+    assert by_name["fetch"] == "SUCCEEDED"
+    assert by_name["publish"] == "SUCCEEDED"
+    assert "FAILED" in by_name.values()
 
 
 def test_redeliver_rejects_a_run_with_no_callback(client, completed_run):

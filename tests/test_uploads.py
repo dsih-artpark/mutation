@@ -164,6 +164,41 @@ def test_a_run_json_manifest_is_written_beside_them():
     assert get_store().head(f"runs/{run_id}/run.json") is not None
 
 
+def test_publish_is_recorded_as_a_stage():
+    """effective_stages counts publish, so something has to record it. Without
+    this a run that finished perfectly reports 9/10 forever and a UI reads it
+    as stuck."""
+    from app.models import RunStage, StageStatus
+    from app.tasks import upload_run_artifacts
+
+    run_id = _make_run()
+    upload_run_artifacts(run_id)
+
+    with session_scope() as session:
+        stages = session.query(RunStage).filter(
+            RunStage.run_id == run_id, RunStage.name == "publish").all()
+        assert len(stages) == 1
+        assert stages[0].status == StageStatus.SUCCEEDED
+        assert stages[0].duration_s is not None
+
+
+def test_a_retrying_upload_does_not_pile_up_publish_rows(failing_store):
+    """Upserted, not inserted -- six attempts must not leave six rows."""
+    from app.config import S3_UPLOAD_MAX_ATTEMPTS
+    from app.models import RunStage, StageStatus
+    from app.tasks import upload_run_artifacts
+
+    run_id = _make_run(upload_attempts=S3_UPLOAD_MAX_ATTEMPTS - 1)
+    upload_run_artifacts(run_id)
+    upload_run_artifacts(run_id)
+
+    with session_scope() as session:
+        stages = session.query(RunStage).filter(
+            RunStage.run_id == run_id, RunStage.name == "publish").all()
+        assert len(stages) == 1
+        assert stages[0].status == StageStatus.FAILED
+
+
 def test_the_webhook_fires_once_the_upload_succeeds():
     from app.tasks import upload_run_artifacts
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 import traceback
 from datetime import datetime, timedelta, timezone
 
@@ -30,7 +31,7 @@ from .models import (
     utcnow,
 )
 from .pipelines import registry
-from .pipelines.base import FETCH_STAGE
+from .pipelines.base import FETCH_STAGE, PUBLISH_STAGE
 from .runtime.context import RunContext, RunPaths
 from .runtime.runner import preflight
 from .runtime.spec import InputUnavailable, PreflightFailed, StageError
@@ -316,6 +317,7 @@ def upload_run_artifacts(self, run_id: str) -> dict:
     is the expensive mistake, not the cheap one.
     """
     store = get_store()
+    started = time.monotonic()
 
     with session_scope() as session:
         run = session.get(Run, run_id)
@@ -361,15 +363,19 @@ def upload_run_artifacts(self, run_id: str) -> dict:
 
         run.output_bucket = bucket_name()
         run.upload_attempts = attempts + 1
+        elapsed = time.monotonic() - started
 
         if failure is None:
             run.artifacts_uploaded = True
             run.upload_error = None
             run.next_upload_attempt_at = None
+            _record_publish_stage(session, run, StageStatus.SUCCEEDED, elapsed)
         else:
             run.upload_error = failure[:8000]
             if run.upload_attempts >= S3_UPLOAD_MAX_ATTEMPTS:
                 run.next_upload_attempt_at = None
+                # The run stays SUCCEEDED; only the publication failed.
+                _record_publish_stage(session, run, StageStatus.FAILED, elapsed, failure)
             else:
                 index = min(run.upload_attempts - 1, len(S3_UPLOAD_BACKOFF_S) - 1)
                 countdown = S3_UPLOAD_BACKOFF_S[index]
@@ -389,6 +395,38 @@ def upload_run_artifacts(self, run_id: str) -> dict:
 
     upload_run_artifacts.apply_async(args=[run_id], countdown=countdown)
     return {"run_id": run_id, "status": "retrying", "in_s": countdown}
+
+
+def _record_publish_stage(session, run, status, duration_s, message=None) -> None:
+    """Give `publish` a row like any other stage.
+
+    Without this the stage is in the denominator -- `effective_stages` appends
+    it -- and nothing ever records it, so a run that finished perfectly reports
+    9/10 forever and a UI reads it as stuck. Exactly the drift `_ordinal_of`
+    already refuses to allow inside a pipeline; this is the platform's own half
+    of the same rule.
+
+    Upserted rather than inserted: an upload that retries five times must not
+    leave five rows.
+    """
+    pipeline = registry.get(run.pipeline_id) if run.pipeline_id in registry else None
+    ordinal = len(pipeline.effective_stages) - 1 if pipeline else -1
+
+    stage = (
+        session.query(RunStage)
+        .filter(RunStage.run_id == run.id, RunStage.name == PUBLISH_STAGE)
+        .one_or_none()
+    )
+    if stage is None:
+        stage = RunStage(run_id=run.id, name=PUBLISH_STAGE, ordinal=ordinal,
+                         started_at=utcnow())
+        session.add(stage)
+
+    stage.status = status
+    stage.finished_at = utcnow()
+    stage.duration_s = duration_s
+    if message:
+        stage.message = message[:8000]
 
 
 def _write_run_manifest(run_id: str, store) -> str | None:
