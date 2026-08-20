@@ -556,3 +556,45 @@ def test_pull_rejects_a_scope_that_matches_nothing(tmp_path, monkeypatch):
 
     with pytest.raises(SystemExit, match="no images in scope"):
         images_tool.cmd_pull(argparse.Namespace(scope="typo"))
+
+
+def test_a_lock_from_a_different_version_is_ignored_not_trusted(monkeypatch, capsys):
+    """Bumping a version and not yet re-locking used to resolve silently to the
+    PREVIOUS digest -- so a rebuilt image never ran, and the bug it was rebuilt
+    to fix was still there with nothing saying why. Falls back to the declared
+    tag, which REQUIRE_PINNED_IMAGES then refuses in production."""
+    from pathlib import Path
+
+    from app.runtime.images import ImageResolver
+    from app.runtime.manifest import ImageEntry, Manifest
+
+    entry = ImageEntry(key="snippy", source="build",
+                       repository="dsihartpark/dharini-snippy", version="4.6.0-2")
+    manifest = Manifest(scope="shared", path=Path("shared/manifest.yaml"),
+                        images={"snippy": entry}, assets={}, fixtures={})
+    lock = {"shared:snippy": {"repository": "dsihartpark/dharini-snippy",
+                              "version": "4.6.0-1",
+                              "digest": "sha256:" + "a" * 64,
+                              "ref": "dsihartpark/dharini-snippy@sha256:" + "a" * 64}}
+
+    resolved = ImageResolver(manifests={"shared": manifest}, lock=lock).resolve("shared", "snippy")
+    assert resolved == "dsihartpark/dharini-snippy:4.6.0-2"
+    assert "a" * 64 not in resolved
+    assert "stale digest" in capsys.readouterr().err
+
+
+def test_a_lock_matching_the_manifest_is_used(monkeypatch):
+    from pathlib import Path
+
+    from app.runtime.images import ImageResolver
+    from app.runtime.manifest import ImageEntry, Manifest
+
+    entry = ImageEntry(key="snippy", source="build",
+                       repository="dsihartpark/dharini-snippy", version="4.6.0-2")
+    manifest = Manifest(scope="shared", path=Path("shared/manifest.yaml"),
+                        images={"snippy": entry}, assets={}, fixtures={})
+    ref = "dsihartpark/dharini-snippy@sha256:" + "b" * 64
+    lock = {"shared:snippy": {"repository": "dsihartpark/dharini-snippy",
+                              "version": "4.6.0-2", "digest": "sha256:" + "b" * 64,
+                              "ref": ref}}
+    assert ImageResolver(manifests={"shared": manifest}, lock=lock).resolve("shared", "snippy") == ref

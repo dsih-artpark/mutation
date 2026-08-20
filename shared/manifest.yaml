@@ -26,7 +26,7 @@ images:
     dockerfile: docker/snippy/Dockerfile
     context: docker/snippy
     repository: dsihartpark/dharini-snippy
-    version: "4.6.0-1"
+    version: "4.6.0-2"
     platform: linux/amd64
 
 assets:

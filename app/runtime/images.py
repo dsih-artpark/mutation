@@ -106,7 +106,31 @@ class ImageResolver:
             ref = override
         else:
             locked = self._lock.get(f"{scope}:{key}")
-            ref = locked["ref"] if locked and locked.get("ref") else entry.tagged_ref
+            locked_ref = locked.get("ref") if locked else None
+
+            # The lock records the version its digest was built from. A digest
+            # from a DIFFERENT version does not describe the image being asked
+            # for, and using it anyway is how a rebuilt image never runs: bump
+            # a version, deploy, and the old image is still what executes with
+            # nothing saying so -- the fix ships and the bug survives it.
+            #
+            # Falling back to the declared tag rather than raising, because the
+            # lock is legitimately stale between "bump the version" and "CI has
+            # rebuilt and re-locked". REQUIRE_PINNED_IMAGES below then refuses
+            # the un-pinned tag, so production still cannot run it, while a
+            # developer and CI get the image they actually asked for.
+            locked_version = locked.get("version") if locked else None
+            if locked_ref and locked_version and locked_version != entry.version:
+                print(
+                    f"WARNING: {scope}:{key} is declared as version {entry.version!r} "
+                    f"but images.lock.json holds {locked_version!r}. Ignoring the stale "
+                    f"digest and using the tag, so this image is NOT digest-pinned. "
+                    f"Run 'make images-build' then 'make images-lock'.",
+                    file=sys.stderr, flush=True,
+                )
+                locked_ref = None
+
+            ref = locked_ref or entry.tagged_ref
 
         if REQUIRE_PINNED_IMAGES and "@sha256:" not in ref:
             raise ImageResolutionError(
