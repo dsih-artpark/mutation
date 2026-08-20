@@ -11,19 +11,17 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import pipelines_router, queue_router, runs_router
+from .api import pipelines_router, queue_router, runs_router, system_router
 from .auth import require_principal
 from .config import (
     CORS_ALLOWED_ORIGINS,
     RUNS_ROOT,
-    S3_ALLOWED_PREFIX,
-    S3_OUTPUT_PREFIX,
     STORAGE_BACKEND,
     WORKER_CONCURRENCY,
 )
 from .db import current_revision, init_db
 from .pipelines import registry
-from .storage import bucket_name, get_store
+from .probe import storage_probe
 
 
 @asynccontextmanager
@@ -59,6 +57,7 @@ if CORS_ALLOWED_ORIGINS:
 app.include_router(pipelines_router, dependencies=[Depends(require_principal)])
 app.include_router(runs_router, dependencies=[Depends(require_principal)])
 app.include_router(queue_router, dependencies=[Depends(require_principal)])
+app.include_router(system_router, dependencies=[Depends(require_principal)])
 
 
 @app.get("/", tags=["meta"])
@@ -71,48 +70,19 @@ def read_root():
     }
 
 
-# Probing object storage costs a network round trip, and a load balancer hits
-# this endpoint every few seconds. Cached briefly so the probe is real without
-# being a self-inflicted request flood.
-_STORAGE_PROBE_TTL_S = 30.0
-_storage_probe: tuple[float, dict] | None = None
+def _storage() -> dict:
+    """Backend and reachability. Nothing that helps a caller aim.
 
-
-def _probe_storage() -> dict:
-    """Can this process actually reach the object store?
-
-    A HEAD on a key that does not exist is enough: it exercises credential
-    resolution and bucket reachability without needing an object to be there.
-    Under the production IAM policy a missing object answers 403 rather than
-    404 -- the instance role deliberately lacks ListBucket -- and storage.head
-    already reads both as absence, so "reachable" is the meaningful signal.
-
-    Never raises. Losing the probe must not take the health endpoint with it.
+    The exception TYPE only -- NoCredentialsError, EndpointConnectionError and
+    ClientError already separate the failure modes an operator cares about,
+    while the message would hand an unauthenticated caller the bucket name, the
+    key and sometimes the account id. GET /v1/system has the full text.
     """
-    global _storage_probe
-
-    now = time.monotonic()
-    if _storage_probe and now - _storage_probe[0] < _STORAGE_PROBE_TTL_S:
-        return _storage_probe[1]
-
-    result = {
-        "backend": STORAGE_BACKEND,
-        "bucket": bucket_name(),
-        # Reported because a prefix that disagrees with the IAM policy -- or
-        # with Dharini's S3_FOLDER -- fails as "object does not exist", which
-        # looks exactly like a typo'd key. Seeing the effective values is what
-        # separates the two.
-        "input_prefix": S3_ALLOWED_PREFIX,
-        "output_prefix": S3_OUTPUT_PREFIX,
-    }
-    try:
-        get_store().head(f"{S3_ALLOWED_PREFIX}.healthcheck-probe")
-        result["reachable"] = True
-    except Exception as exc:  # noqa: BLE001 - reported, not raised
-        result["reachable"] = False
-        result["error"] = f"{type(exc).__name__}: {exc}"
-
-    _storage_probe = (now, result)
+    result = {"backend": STORAGE_BACKEND}
+    probe = storage_probe()
+    result["reachable"] = probe["reachable"]
+    if not probe["reachable"]:
+        result["error"] = probe["error_type"]
     return result
 
 
@@ -135,7 +105,7 @@ def health_check():
         # "the migration did not run" and "the code is old" look identical from
         # outside. This is what tells them apart.
         "schema_revision": current_revision(),
-        "storage": _probe_storage(),
+        "storage": _storage(),
         "disk": {
             "free_gb": round(usage.free / 10**9, 1),
             "total_gb": round(usage.total / 10**9, 1),

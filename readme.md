@@ -374,7 +374,8 @@ about 1h 25m before this starts"* instead of an unqualified "queued".
 | `GET /v1/runs/{id}/artifacts/{filename}` | either | download a result file — kept for operational debugging; Dharini mints its own presigned S3 GET for an end user |
 | `POST /v1/runs/{id}/redeliver` | service only | re-send the webhook manually |
 | `POST /v1/runs/{id}/reupload` | service only | re-run artifact publication, after an S3 outage longer than the retry schedule |
-| `GET /health` | open | liveness, disk, schema revision, storage reachability |
+| `GET /v1/system` | either | bucket, prefixes, pipeline versions, resolved image digests, limits |
+| `GET /health` | open | liveness, disk, schema revision, storage reachability — nothing that names the bucket |
 
 The **Credential** column describes the rules once `API_KEYS` is set. With auth
 off, "either" and "service only" both mean *no credential required*.
@@ -1083,33 +1084,78 @@ make migration m="…"    # generate a new revision after changing app/models.py
 run" and "the code is newer than the schema" don't look identical from
 outside.
 
-### `/health`
+### `/health` and `/v1/system`
 
-```bash
-curl localhost:8000/health
-```
+Two endpoints, split by who can reach them.
+
+**`GET /health` — unauthenticated, and carries nothing that helps a caller
+aim.** This is the route that ends up exposed: load-balancer target groups,
+uptime monitors and container probes all hit it, and it is the first thing
+anyone opens to the world.
 
 ```json
 {
   "status": "ok", "pipelines": 2, "worker_concurrency": 1,
   "schema_revision": "0002",
-  "storage": {"backend": "s3", "bucket": "dsih-artpark-04-staging-data",
-              "input_prefix": "SDS004-ES_App_Data/genomic-sequencing/uploads/",
-              "output_prefix": "SDS004-ES_App_Data/genomic-sequencing/runs/", "reachable": true},
-  "disk": {"free_gb": 812.4, "total_gb": 999.9, "used_percent": 18.8}
+  "storage": {"backend": "s3", "reachable": true},
+  "disk": {"free_gb": 81.4, "total_gb": 102.9, "used_percent": 20.9}
 }
 ```
 
-Always `200` while the process itself is up. Storage being unreachable is
-reported in `storage.reachable` rather than failing the check: taking every
-instance out of rotation because S3 blipped turns a degradation into an
-outage, and this is what an operator actually reads to tell "the process is
-dead" apart from "the process is fine but can't reach S3" apart from "the
-schema is behind the code" — three failure modes that otherwise look
+Always `200` while the process is up. Storage being unreachable is reported in
+the body rather than failing the check: taking every instance out of rotation
+because S3 blipped turns a degradation into an outage. This is what tells "the
+process is dead" apart from "the process is fine but cannot reach S3" apart
+from "the schema is behind the code" — three failure modes that otherwise look
 identical from outside, at 2am, on a run that has been computing for forty
 minutes.
 
----
+On failure `storage.error` is the exception **type** and nothing more
+(`NoCredentialsError`, `EndpointConnectionError`, `ClientError`). Those already
+separate the failure modes worth acting on, while the message would hand an
+unauthenticated caller the bucket name, the key and sometimes the account id.
+
+**`GET /v1/system` — behind the credential, and carries the detail.**
+
+```bash
+curl -s localhost:8000/v1/system | jq
+```
+
+```jsonc
+{
+  "schema_revision": "0002",
+  "storage": {
+    "backend": "s3", "bucket": "dsih-artpark-04-staging-data",
+    "input_prefix":  "SDS004-ES_App_Data/genomic-sequencing/uploads/",
+    "output_prefix": "SDS004-ES_App_Data/genomic-sequencing/runs/",
+    "reachable": true, "error": null      // full message, not just the type
+  },
+  "pipelines": [
+    { "id": "ont-lsdv", "version": "1.1.0",
+      "stages": ["fetch", "prepare", …, "publish"],
+      "images": ["hkubal/clair3@sha256:57cf5d20…",
+                 "quay.io/biocontainers/medaka@sha256:…",
+                 "dsihartpark/dharini-ont-core@sha256:314f8675…"] }
+  ],
+  "limits": { "worker_concurrency": 1, "max_input_bytes": 5368709120,
+              "local_retention_hours": 6, "require_pinned_images": true }
+}
+```
+
+The prefixes are here because a prefix that disagrees with Dharini's
+`S3_FOLDER` fails as *"object does not exist"* — indistinguishable from a
+typo'd key, since the service cannot list the bucket. Printing what it is
+actually looking under is what separates the two.
+
+`images` is the **resolved digest** for every image each pipeline will run, so
+"which build of Medaka produced this result" has an answer months later. That
+is the question a variant call is worth nothing without.
+
+> **There is deliberately no "is this image pulled" field.** Answering it means
+> talking to the Docker daemon, and the API container does not mount the socket
+> — only the worker does, because that socket is root-equivalent access to the
+> host. Mounting it here to satisfy a status page would trade a real security
+> boundary for a convenience. `make images-list` on the host answers it.
 
 ## Operations
 
