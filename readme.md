@@ -241,8 +241,9 @@ curl -X POST localhost:8000/v1/runs \
         "pipeline_id": "ont-lsdv",
         "external_id": "dharini-job-8831",
         "owner_id": "u17",
-        "input_key": "uploads/u17/2f8c/reads.fastq.gz",
-        "extra_input_keys": {"primer_bed": "uploads/u17/2f8c/scheme.bed"},
+        "input_key": "SDS004-ES_App_Data/uploads/u17/2f8c/reads.fastq.gz",
+        "extra_input_keys": {
+          "primer_bed": "SDS004-ES_App_Data/uploads/u17/2f8c/scheme.bed"},
         "params": {"variant": {"tool": "clair3"}, "threads": 4},
         "callback_url": "https://dharini.example.org/api/snp/webhook"
       }'
@@ -267,7 +268,7 @@ Two things worth knowing:
   client's timeout-and-retry safe, and it is also how the eventual webhook
   can be correlated if the `202` itself was lost.
 - **Every input key is validated before anything is queued**: well-formed,
-  under the `uploads/` prefix, an accepted extension, and confirmed with a
+  under the configured `…/uploads/` prefix, an accepted extension, and confirmed with a
   `HeadObject` call to actually exist and sit within `MAX_INPUT_BYTES` — all
   in milliseconds. A typo'd key is a `422` immediately, not a run that
   queues, waits behind three others, and dies twenty minutes later.
@@ -417,10 +418,12 @@ X-Dharini-Signature: sha256=<hmac>
   "artifacts": [ { "kind": "vcf", "label": "Annotated variants",
                    "filename": "annotated.vcf", "size_bytes": 48210,
                    "content_type": "text/plain",
-                   "bucket": "dharini-prod", "key": "runs/<run_id>/annotated.vcf" } ],
+                   "bucket": "dsih-artpark-04-staging-data",
+                   "key": "SDS004-ES_App_Data/runs/<run_id>/annotated.vcf" } ],
   "artifacts_uploaded": true,
   "artifacts_error": null,
-  "output": { "bucket": "dharini-prod", "prefix": "runs/<run_id>/" }
+  "output": { "bucket": "dsih-artpark-04-staging-data",
+              "prefix": "SDS004-ES_App_Data/runs/<run_id>/" }
 }
 ```
 
@@ -561,16 +564,29 @@ run gets slower without anything reporting an error.
 
 ### 2. The S3 bucket
 
-One bucket, two prefixes. `uploads/` is written by Dharini and read by this
-service; `runs/` is written by this service and read by Dharini. Those names
-are **constants in `app/config.py`, not settings** — they are mirrored in the
-IAM policy below, and changing one without the other produces `AccessDenied`
-on every run with nothing in the error saying why.
+One bucket, one folder, two prefixes under it:
+
+```text
+<S3_BUCKET>/<S3_PREFIX>/uploads/…          Dharini writes, this service reads
+<S3_BUCKET>/<S3_PREFIX>/runs/<run_id>/…    this service writes, Dharini reads
+```
+
+`S3_PREFIX` is the folder this deployment owns — a shared bucket is exactly the
+case where it differs between deployments, so it is configuration.
+**It must equal Dharini's `S3_FOLDER` exactly**, or this service looks for the
+upload somewhere Dharini never put it.
+
+The `uploads/` and `runs/` leaf names are **constants in `app/config.py`, not
+settings** — they are mirrored in the IAM policy below, and renaming one without
+the other produces `AccessDenied` with nothing in the error saying why.
+`GET /health` reports both effective prefixes so a mismatch is at least visible.
 
 ```bash
-BUCKET=dharini-prod           # your name
+BUCKET=dsih-artpark-04-staging-data
+PREFIX=SDS004-ES_App_Data
 REGION=ap-south-1             # same region as the instance
 
+# Only if the bucket does not already exist.
 aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
   --create-bucket-configuration LocationConstraint="$REGION"
 
@@ -627,11 +643,11 @@ the instance-profile path:
     { "Sid": "ReadInputs",
       "Effect": "Allow",
       "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::dharini-prod/uploads/*" },
+      "Resource": "arn:aws:s3:::dsih-artpark-04-staging-data/SDS004-ES_App_Data/uploads/*" },
     { "Sid": "WriteResults",
       "Effect": "Allow",
       "Action": "s3:PutObject",
-      "Resource": "arn:aws:s3:::dharini-prod/runs/*" }
+      "Resource": "arn:aws:s3:::dsih-artpark-04-staging-data/SDS004-ES_App_Data/runs/*" }
   ]
 }
 ```
@@ -718,7 +734,13 @@ aws ec2 associate-iam-instance-profile --instance-id i-… \
 
 ```bash
 curl -s localhost:8000/health | jq .storage
-# { "backend": "s3", "bucket": "dharini-prod", "reachable": true }
+# {
+#   "backend": "s3",
+#   "bucket": "dsih-artpark-04-staging-data",
+#   "input_prefix":  "SDS004-ES_App_Data/uploads/",
+#   "output_prefix": "SDS004-ES_App_Data/runs/",
+#   "reachable": true
+# }
 ```
 
 `reachable: true` means this process resolved credentials and completed a real
@@ -736,7 +758,8 @@ docker compose exec api python -c \
 
 #### e. Add a VPC gateway endpoint for S3
 
-Optional, and worth doing anyway:
+Optional, and worth doing anyway. Note the bucket is shared with other
+workloads, so the endpoint benefits them too:
 
 ```bash
 aws ec2 create-vpc-endpoint --vpc-id vpc-… \
@@ -754,8 +777,13 @@ Without `s3:ListBucket`, S3 answers a HEAD on a key you cannot read with
 deliberately treats both as absence — that conflation is what turns a typo'd key
 into a clean `422` instead of a `500`. The cost is that a **misconfigured
 policy is indistinguishable from a typo**: if every submission comes back
-`422 … does not exist` for keys you can see in the console, check the bucket
-name and the `uploads/` prefix in the policy before you go looking at Dharini.
+`422 … does not exist` for keys you can see in the console, check three things
+before you go looking at Dharini — `curl -s localhost:8000/health | jq .storage`
+prints all of them:
+
+1. the bucket name in the policy;
+2. `S3_PREFIX` here versus `S3_FOLDER` in Dharini — they must be identical;
+3. that the policy's `Resource` includes the prefix, not just `uploads/*`.
 
 ### 4. Security group
 
@@ -809,6 +837,7 @@ which must be set.** Anything not in it has a working default in
 | Variable | Value |
 | --- | --- |
 | `S3_BUCKET`, `S3_REGION` | from step 2 |
+| `S3_PREFIX` | the folder inside the bucket. **Must equal Dharini's `S3_FOLDER`** |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | from step 3b. **Both or neither** — leave both empty on the instance-role path |
 | `DOCKER_GID` | `getent group docker \| cut -d: -f3` |
 | `POSTGRES_PASSWORD` | anything; it never leaves the compose network |
@@ -918,7 +947,9 @@ curl localhost:8000/health
 {
   "status": "ok", "pipelines": 2, "worker_concurrency": 1,
   "schema_revision": "0002",
-  "storage": {"backend": "s3", "bucket": "dharini", "reachable": true},
+  "storage": {"backend": "s3", "bucket": "dsih-artpark-04-staging-data",
+              "input_prefix": "SDS004-ES_App_Data/uploads/",
+              "output_prefix": "SDS004-ES_App_Data/runs/", "reachable": true},
   "disk": {"free_gb": 812.4, "total_gb": 999.9, "used_percent": 18.8}
 }
 ```

@@ -172,17 +172,40 @@ if STORAGE_BACKEND == "s3" and not S3_BUCKET:
     raise RuntimeError("STORAGE_BACKEND=s3 requires S3_BUCKET to be set.")
 
 
-# Not configurable, deliberately. These two prefixes are written into the
-# instance role's IAM policy -- GetObject on uploads/*, PutObject on runs/* --
-# so changing one here without changing the policy produces AccessDenied on
-# every run and nothing in the error says why. They are part of the deployment
-# contract, not a per-environment knob.
+# Where in the bucket this deployment lives. Empty means the bucket root;
+# "SDS004-ES_App_Data" puts every key under that folder. Configurable because a
+# shared bucket is exactly the case where it differs between deployments --
+# Dharini calls the same value S3_FOLDER, and the two MUST agree or this service
+# looks for the upload somewhere Dharini never put it.
+_raw_prefix = os.getenv("S3_PREFIX", "").strip().strip("/")
+
+# Validated, not just normalised. This string is concatenated into every key
+# and is mirrored in the IAM policy; a stray "..", backslash or control
+# character produces keys that address objects nobody intended.
+if _raw_prefix and (
+    ".." in _raw_prefix.split("/")
+    or "\\" in _raw_prefix
+    or any(c in _raw_prefix for c in "\x00\n\r\t")
+    or "//" in _raw_prefix
+):
+    raise RuntimeError(
+        f"S3_PREFIX={_raw_prefix!r} is not a plain folder path. Use something "
+        f"like 'SDS004-ES_App_Data' or leave it empty for the bucket root."
+    )
+
+S3_PREFIX = f"{_raw_prefix}/" if _raw_prefix else ""
+
+# The LEAF names are not configurable, deliberately. Together with S3_PREFIX
+# they are written into the IAM policy -- GetObject on <prefix>uploads/*,
+# PutObject on <prefix>runs/* -- so renaming one here without changing the
+# policy produces AccessDenied on every run and nothing in the error says why.
+# GET /health reports both, so a mismatch is at least visible.
 #
 # The trailing slash is load-bearing: `key.startswith("uploads")` would also
 # accept "uploadsX/anything", which is a different namespace chosen by whoever
 # supplied the key.
-S3_ALLOWED_PREFIX = "uploads/"
-S3_OUTPUT_PREFIX = "runs/"
+S3_ALLOWED_PREFIX = f"{S3_PREFIX}uploads/"
+S3_OUTPUT_PREFIX = f"{S3_PREFIX}runs/"
 
 # Static credentials. Left empty, boto3 falls back to its own chain -- on EC2
 # that is the instance role, locally it is ~/.aws/credentials or an SSO session.

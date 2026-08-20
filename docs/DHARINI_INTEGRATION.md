@@ -35,12 +35,21 @@ Browser picks a FASTA/FASTQ. Dharini mints a presigned `PUT` for a key **it**
 chooses, under the `uploads/` prefix, and the browser PUTs directly to S3.
 
 ```
-uploads/<user-id>/<upload-id>/<filename>
+<S3_FOLDER>/uploads/<user-id>/<upload-id>/<filename>
+
+e.g.  SDS004-ES_App_Data/uploads/u17/2f8c/reads.fastq.gz
 ```
 
-The pipeline service validates that every submitted key starts with `uploads/`
-and rejects `..`, leading `/`, empty segments, control characters and keys over
-1024 bytes. Keep the layout inside that prefix.
+⚠ **`<S3_FOLDER>` is your existing `S3_FOLDER` value and it is part of the
+key.** The pipeline service is configured with the identical string as
+`S3_PREFIX` and only accepts keys beginning `<S3_PREFIX>uploads/`. If the two
+disagree, every submission comes back `422 … does not exist` — the object is
+real, it is simply not where the pipeline service looks. `GET /health` on the
+pipeline service prints the prefixes it is actually using; compare them against
+yours before debugging anything else.
+
+Beyond the prefix, the service rejects `..`, leading `/`, empty segments,
+control characters and keys over 1024 bytes. Keep the layout inside the prefix.
 
 Bytes must never pass through the NestJS process. A 1.2 GB FASTQ streamed
 through Node is a timeout, not a feature.
@@ -58,9 +67,10 @@ X-API-Key: {PIPELINE_API_KEY}          # see "Auth is currently OFF" below
   "pipeline_id":      "ont-lsdv",              // from GET /v1/pipelines
   "external_id":      "dharini-job-8831",      // REQUIRED. See below.
   "owner_id":         "u17",                   // which Dharini user owns this
-  "input_key":        "uploads/u17/2f8c/reads.fastq.gz",
+  "input_key":        "SDS004-ES_App_Data/uploads/u17/2f8c/reads.fastq.gz",
   "input_filename":   "Sample_42_reads.fastq.gz",   // optional, display only
-  "extra_input_keys": { "primer_bed": "uploads/u17/2f8c/scheme.bed" },
+  "extra_input_keys": {
+      "primer_bed": "SDS004-ES_App_Data/uploads/u17/2f8c/scheme.bed" },
   "params":           { "variant": {"tool": "clair3"}, "threads": 4 },
   "callback_url":     "https://dharini.example.org/api/pipeline/webhook"
 }
@@ -299,8 +309,9 @@ not a firewall to get opened. Proxy progress polls through a Dharini route.
 | `PIPELINE_URL` | base URL of the pipeline service |
 | `PIPELINE_API_KEY` | leave EMPTY for now |
 | `WEBHOOK_SECRET` | shared with the pipeline service; must match exactly |
-| `S3_BUCKET` | one bucket, two prefixes: `uploads/` and `runs/` |
-| AWS creds | Dharini needs `PutObject` on `uploads/*` and `GetObject` on `runs/*` |
+| `S3_BUCKET` | `dsih-artpark-04-staging-data` |
+| `S3_FOLDER` | `SDS004-ES_App_Data` — **must equal the pipeline service's `S3_PREFIX`** |
+| AWS creds | Dharini needs `PutObject` on `<folder>/uploads/*` and `GetObject` on `<folder>/runs/*` — the mirror image of the pipeline service's, which is why they are separate credentials |
 
 The pipeline service's `WEBHOOK_ALLOWED_HOSTS` must include Dharini's hostname,
 and the callback URL must resolve to a public address — a private-range address

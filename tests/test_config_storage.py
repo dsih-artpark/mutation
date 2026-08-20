@@ -51,19 +51,47 @@ def test_local_backend_needs_no_bucket(monkeypatch):
     assert config.STORAGE_BACKEND == "local"
 
 
-def test_prefixes_are_constants_not_configuration(monkeypatch):
-    """They are mirrored in the instance role's IAM policy, so changing one
-    without changing the policy is AccessDenied on every run with nothing in
-    the error to explain it. The env must not be able to move them."""
+def test_prefix_leaf_names_are_not_configuration(monkeypatch):
+    """The leaf names are mirrored in the IAM policy, so renaming one without
+    changing the policy is AccessDenied on every run with nothing in the error
+    to explain it. The env must not be able to move them."""
     config = _reload(monkeypatch, S3_ALLOWED_PREFIX="somewhere-else",
-                     S3_OUTPUT_PREFIX="elsewhere", API_KEYS="d:sk")
+                     S3_OUTPUT_PREFIX="elsewhere", S3_PREFIX="", API_KEYS="d:sk")
     assert config.S3_ALLOWED_PREFIX == "uploads/"
     assert config.S3_OUTPUT_PREFIX == "runs/"
 
 
-def test_prefixes_end_with_a_slash(monkeypatch):
+def test_no_prefix_means_the_bucket_root(monkeypatch):
+    config = _reload(monkeypatch, S3_PREFIX="", API_KEYS="d:sk")
+    assert config.S3_PREFIX == ""
+    assert config.S3_ALLOWED_PREFIX == "uploads/"
+
+
+@pytest.mark.parametrize("given", [
+    "SDS004-ES_App_Data",        # as written in Dharini's S3_FOLDER
+    "/SDS004-ES_App_Data",       # leading slash: an S3 key never starts with one
+    "SDS004-ES_App_Data/",       # trailing slash, the shape most people type
+    "/SDS004-ES_App_Data/",
+])
+def test_a_folder_prefix_is_normalised_and_nests_both_prefixes(monkeypatch, given):
+    config = _reload(monkeypatch, S3_PREFIX=given, API_KEYS="d:sk")
+    assert config.S3_PREFIX == "SDS004-ES_App_Data/"
+    assert config.S3_ALLOWED_PREFIX == "SDS004-ES_App_Data/uploads/"
+    assert config.S3_OUTPUT_PREFIX == "SDS004-ES_App_Data/runs/"
+
+
+@pytest.mark.parametrize("hostile", ["a/../../b", "a\\b", "a//b", "a\nb"])
+def test_a_prefix_that_is_not_a_plain_folder_path_is_rejected(monkeypatch, hostile):
+    # Concatenated into every key, so a traversal segment here addresses
+    # objects nobody intended -- and is mirrored in the IAM policy besides.
+    with pytest.raises(RuntimeError, match="plain folder path"):
+        _reload(monkeypatch, S3_PREFIX=hostile, API_KEYS="d:sk")
+
+
+@pytest.mark.parametrize("prefix", ["", "SDS004-ES_App_Data"])
+def test_prefixes_end_with_a_slash(monkeypatch, prefix):
     """Load-bearing: startswith("uploads") would also accept "uploadsX/evil"."""
-    config = _reload(monkeypatch, API_KEYS="d:sk")
+    config = _reload(monkeypatch, S3_PREFIX=prefix, API_KEYS="d:sk")
     assert config.S3_ALLOWED_PREFIX.endswith("/")
     assert config.S3_OUTPUT_PREFIX.endswith("/")
 

@@ -17,6 +17,7 @@ from .config import (
     CORS_ALLOWED_ORIGINS,
     RUNS_ROOT,
     S3_ALLOWED_PREFIX,
+    S3_OUTPUT_PREFIX,
     STORAGE_BACKEND,
     WORKER_CONCURRENCY,
 )
@@ -94,7 +95,16 @@ def _probe_storage() -> dict:
     if _storage_probe and now - _storage_probe[0] < _STORAGE_PROBE_TTL_S:
         return _storage_probe[1]
 
-    result = {"backend": STORAGE_BACKEND, "bucket": bucket_name()}
+    result = {
+        "backend": STORAGE_BACKEND,
+        "bucket": bucket_name(),
+        # Reported because a prefix that disagrees with the IAM policy -- or
+        # with Dharini's S3_FOLDER -- fails as "object does not exist", which
+        # looks exactly like a typo'd key. Seeing the effective values is what
+        # separates the two.
+        "input_prefix": S3_ALLOWED_PREFIX,
+        "output_prefix": S3_OUTPUT_PREFIX,
+    }
     try:
         get_store().head(f"{S3_ALLOWED_PREFIX}.healthcheck-probe")
         result["reachable"] = True
