@@ -544,31 +544,73 @@ the service can start successfully.
 | | |
 | --- | --- |
 | **Architecture** | **x86_64 only** — see the warning below |
-| **Type** | `m6i.xlarge` — 4 vCPU, 16 GiB |
+| **Type** | `m6a.xlarge` — 4 vCPU, 16 GiB, AMD EPYC |
 | **AMI** | **Ubuntu 24.04 LTS**, x86_64 |
-| **Storage** | gp3, **200 GB**, 3000 IOPS (the default) |
+| **Storage** | gp3, **100 GB** to start, 3000 IOPS (the default) |
 | **Region** | `ap-south-1` — same as the bucket |
 
-**Where `m6i.xlarge` comes from.** The heaviest stages declare `cpus=4,
-memory_gb=8` (Medaka and Clair3; `align` is 4/6), and `WORKER_CONCURRENCY=1`
-means exactly one runs at a time. So the pipeline's own ceiling is 4 vCPU and
-8 GiB, and the rest of the box carries Postgres, Redis, the API, the worker,
-beat and the OS. 4 vCPU / 16 GiB fits that with headroom and no waste.
+### Cost
 
-`c6i.2xlarge` (8 vCPU, 16 GiB) is the upgrade, and only two things justify it:
-raising `WORKER_CONCURRENCY` above 1, or raising `MAX_STAGE_CPUS` above 4 so a
-single alignment goes faster. Do neither on guesswork — `run_stages` records
-real peak memory and wall time per stage, so after ~20 runs the
-[sizing query](#sizing) answers it from your data instead.
+On-demand Linux in `ap-south-1`, from AWS's published price list on
+2026-08-20. Verify before committing — these move.
 
-**Why 200 GB.** About 9 GB of tool images, then run scratch, which is the part
-that surprises people: a 2 GB compressed FASTQ decompresses to roughly 5 GB and
-passes through SAM and sorted-BAM intermediates several GB each before `work/`
-is deleted. One large run can transiently want 30–50 GB. Local artifacts are
-swept after `RETENTION_HOURS` (6), and S3 holds the durable copy, so this is
-sized for transient peak, not accumulation. 100 GB works for the fixture-sized
-runs; 200 GB is the difference between never thinking about it and debugging a
-disk-full failure four stages into a two-hour run.
+| Instance | vCPU | RAM | USD/hr | USD/mo (730h) |
+| --- | ---: | ---: | ---: | ---: |
+| **`m6a.xlarge`** | 4 | 16 GiB | **0.1111** | **81.10** |
+| `c6a.2xlarge` | 8 | 16 GiB | 0.1870 | 136.51 |
+| `m6i.xlarge` | 4 | 16 GiB | 0.2020 | 147.46 |
+| `m5.xlarge` | 4 | 16 GiB | 0.2020 | 147.46 |
+| `m6a.2xlarge` | 8 | 32 GiB | 0.2222 | 162.21 |
+| `c6i.2xlarge` | 8 | 16 GiB | 0.3400 | 248.20 |
+
+Plus gp3 at **$0.0912 per GB-month**: $9.12 for 100 GB, $18.24 for 200 GB.
+Same-region S3 transfer is free, so the bill is essentially instance + volume.
+
+**≈ $90/month** for `m6a.xlarge` + 100 GB.
+
+**Why `m6a` and not `m6i`.** Identical on paper — 4 vCPU, 16 GiB, x86_64 — and
+in `ap-south-1` the AMD variant is **45% cheaper**, which is a far wider gap
+than the usual ~10% and worth taking. Every tool image is `linux/amd64`; AMD
+EPYC runs that natively, so there is no compatibility question, only a price
+one.
+
+The one honest caveat: Intel's AVX-512 can help CPU inference, which is what
+Medaka and Clair3 do. If a variant-calling stage turns out to be the bottleneck
+and you have measurements showing it, `m6i.xlarge` is the A/B test. Do not pay
+45% up front for a difference nobody has observed on this workload.
+
+**Why 4 vCPU / 16 GiB.** The heaviest stages declare `cpus=4, memory_gb=8`
+(Medaka and Clair3; `align` is 4/6) and `WORKER_CONCURRENCY=1`, so exactly one
+runs at a time and the pipeline's own ceiling is 4 vCPU / 8 GiB. The remaining
+8 GiB carries Postgres, Redis, the API, the worker, beat, the OS and page cache
+for BAM I/O. **8 GiB total would not work**: `--memory 8g` on an 8 GiB box
+means the OOM killer arrives mid-stage, which is why `c6a.xlarge` is absent
+from the table above despite being cheaper.
+
+Scale up only on evidence. `run_stages` records real peak memory and wall time
+per stage, so after ~20 runs the [sizing query](#sizing) answers it from your
+data. `c6a.2xlarge` (8 vCPU, 16 GiB) is the upgrade if you raise
+`WORKER_CONCURRENCY` or `MAX_STAGE_CPUS`; `m6a.2xlarge` if a stage needs more
+than 8 GiB.
+
+**Why 100 GB, and why start there.** About 9 GB of tool images, then run
+scratch — the part that surprises people. A 2 GB compressed FASTQ decompresses
+to roughly 5 GB and passes through SAM and sorted-BAM intermediates several GB
+each before `work/` is deleted; one large run can transiently want 30–50 GB.
+Local artifacts are swept after `RETENTION_HOURS` (6) and S3 holds the durable
+copy, so this is sized for transient peak, not accumulation.
+
+**gp3 grows online but never shrinks**, so starting at 100 GB and expanding
+costs nothing but a `resize2fs`, while starting at 200 GB commits $9/month
+forever. Go straight to 200 GB only if production FASTQs will be multi-GB from
+the start.
+
+**Two levers if this needs to be cheaper.** A staging box used ten hours a day
+on weekdays is ~220 hours, not 730 — stopping it out of hours takes compute to
+roughly $24/month, though the volume still bills and the API is unreachable
+while it is down, so Dharini cannot submit. And a one-year Compute Savings
+Plan takes 20–30% off once usage has settled; it is not a commitment worth
+making in week one.
 
 > ### ⚠ Do not use Graviton (`m7g`, `c7g`, `t4g`, …)
 >
