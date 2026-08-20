@@ -112,6 +112,13 @@ def resolve(scope: str, key: str, entry: dict, lock: dict[str, dict]) -> tuple[s
         return override, "env"
     locked = lock.get(f"{scope}:{key}")
     if locked and locked.get("ref"):
+        # A digest locked against a DIFFERENT version does not describe the
+        # image being asked for. app/runtime/images.py applies the same rule --
+        # a contract test asserts the two agree on every declared image -- and
+        # the reason is that trusting it means a version bump silently keeps
+        # running the previous build.
+        if locked.get("version") and locked["version"] != entry.get("version"):
+            return tagged_ref(entry), "manifest (lock stale)"
         return str(locked["ref"]), "lock"
     return tagged_ref(entry), "manifest"
 

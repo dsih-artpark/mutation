@@ -1,22 +1,38 @@
+# Builds every image declared with `source: build`, pushes it, and records the
+# resulting digests in images.lock.json.
+#
+# Called by deploy.yml rather than triggered by its own push event. That
+# ordering is load-bearing: the test suite and the deployed host both resolve
+# images through the lock, so an image must exist on the registry BEFORE either
+# looks for it. As two independent push-triggered workflows they raced, and the
+# deploy lost -- it would fail on an image the other workflow was still
+# building.
+
 name: images
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'shared/**'
-      - 'app/pipelines/*/manifest.yaml'
-      - 'app/pipelines/*/docker/**'
-      - 'tools/images.py'
   workflow_dispatch:
+  workflow_call:
+    outputs:
+      sha:
+        description: "The commit main is on afterwards -- this workflow may add a lock commit."
+        value: ${{ jobs.build-push-lock.outputs.sha }}
+
+permissions:
+  contents: write
 
 jobs:
   build-push-lock:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    outputs:
+      sha: ${{ steps.result.outputs.sha }}
     steps:
+      # depth 2 so the "did anything change" diff below has a parent to compare
+      # against. On a merge commit HEAD^ is the previous tip of main, so the
+      # diff covers the whole merged branch.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - uses: actions/setup-python@v5
         with:
@@ -24,11 +40,38 @@ jobs:
 
       - run: pip install PyYAML==6.0.2
 
+      # Two independent reasons to rebuild, and either is enough.
+      #
+      # A changed Dockerfile or manifest is the obvious one. The second matters
+      # more: `lock stale` means a manifest declares a version the lock has no
+      # digest for, which is exactly the state a version bump leaves behind.
+      # Without this check the deploy would run with an image the registry does
+      # not have, and REQUIRE_PINNED_IMAGES would refuse to start.
+      - name: Does anything need building?
+        id: gate
+        run: |
+          reason=""
+          if git diff --name-only HEAD^ HEAD 2>/dev/null \
+             | grep -qE '^(shared/|app/pipelines/[^/]+/manifest\.yaml|app/pipelines/[^/]+/docker/|tools/images\.py)'; then
+            reason="a Dockerfile or manifest changed"
+          elif python tools/images.py list | grep -q "lock stale"; then
+            reason="images.lock.json is stale for at least one declared version"
+          fi
+
+          if [ -n "$reason" ]; then
+            echo "Rebuilding: $reason"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nothing to rebuild; skipping the build, push and lock."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # docker/login-action with empty inputs does not fail -- it skips, and the
       # job then dies three steps later at `docker push` with
       # "insufficient_scope: authorization failed", which reads like a Docker
       # Hub permissions problem rather than an unset secret.
       - name: Check the registry credentials exist
+        if: steps.gate.outputs.build == 'true'
         run: |
           if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ] || [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
             echo "::error::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are not set on this repository."
@@ -38,15 +81,20 @@ jobs:
           fi
 
       - uses: docker/login-action@v3
+        if: steps.gate.outputs.build == 'true'
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - run: python tools/images.py build
-      - run: python tools/images.py push
-      - run: python tools/images.py lock
+      - if: steps.gate.outputs.build == 'true'
+        run: python tools/images.py build
+      - if: steps.gate.outputs.build == 'true'
+        run: python tools/images.py push
+      - if: steps.gate.outputs.build == 'true'
+        run: python tools/images.py lock
 
       - name: Commit the lock file
+        if: steps.gate.outputs.build == 'true'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -61,3 +109,11 @@ jobs:
             git commit -m "chore(images): refresh digest lock"
             git push
           fi
+
+      # Always runs, so the caller gets a SHA whether or not a lock commit
+      # happened. deploy.yml checks this out: deploying the pre-lock commit
+      # would resolve images by tag, and REQUIRE_PINNED_IMAGES refuses that.
+      - name: Report the commit to deploy
+        id: result
+        if: always()
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"

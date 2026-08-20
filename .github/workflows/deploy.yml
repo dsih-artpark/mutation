@@ -34,19 +34,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # The full suite, including the snippy-fasta end-to-end run that no developer
-  # machine can execute. Slow, and the right thing to be slow about.
+  # Images first, because everything downstream resolves through the digest
+  # lock: the suite pulls what a manifest declares, and the host refuses to
+  # start on an unpinned tag. Skips itself unless a Dockerfile changed or the
+  # lock is stale, so most deploys pay nothing for this step.
+  #
+  # It may add a lock commit, which is why it reports a SHA back.
+  images:
+    uses: ./.github/workflows/images.yml
+    permissions:
+      contents: write
+    secrets: inherit
+
+  # The full suite, including the snippy-fasta end-to-end run. Slow, and the
+  # right thing to be slow about.
   test:
+    needs: images
     uses: ./.github/workflows/tests.yml
 
   deploy:
-    needs: test
+    needs: [images, test]
     runs-on: [self-hosted, dharini]
     timeout-minutes: 45
 
     env:
       APP_DIR: /srv/dharini/app
-      TARGET: ${{ github.event.inputs.ref || github.sha }}
+      # The images job's SHA, not github.sha: if it refreshed the lock, that
+      # commit is the only one whose images.lock.json matches the manifests,
+      # and deploying the commit before it resolves images by mutable tag --
+      # which REQUIRE_PINNED_IMAGES refuses, failing the deploy on the host.
+      TARGET: ${{ github.event.inputs.ref || needs.images.outputs.sha || github.sha }}
 
     steps:
       # No actions/checkout. The deploy directory is /srv/dharini/app -- it

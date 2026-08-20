@@ -594,25 +594,16 @@ like the Graviton problem.
 The one real architectural difference is **AVX-512**, which Ice Lake has and
 Milan does not.
 
-> ### ⚠ `snippy-fasta` requires AVX-512 and therefore cannot run on `m6a`
->
-> Not as an optimisation — as an instruction set it will not start without.
-> `vcfstreamsort` and `vcfuniq` in the Snippy image are EVEX-encoded
-> (`vpternlogd`, `%k1` mask registers, the `62` prefix), so they raise SIGILL
-> on any CPU without AVX-512. That is one root cause for all three known
-> failures: Apple Silicon's x86 emulation, the hosted CI runner, and — by
-> construction — AMD Milan.
->
-> This does **not** change the recommendation, because `snippy-fasta` does not
-> currently work anywhere (see [Known gaps](#known-gaps)) and `ont-lsdv` is
-> what the service runs. But it does mean the fix is to **rebuild the Snippy
-> image against a portable baseline**, not to buy an Intel instance. Paying 82%
-> more forever to accommodate one badly-compiled conda package is the wrong
-> trade; if `snippy-fasta` is needed before that rebuild happens, `m6i.xlarge`
-> is the stopgap.
+`snippy-fasta` used to be a reason to prefer Intel here: the vcflib binaries in
+the Snippy image required AVX-512 and raised SIGILL on Milan. That turned out to
+be an unpinned transitive dependency rather than a real requirement, and pinning
+`vcflib=1.0.2` fixed it — see
+[`snippy-fasta` and AVX-512](#snippy-fasta-and-avx-512). Worth knowing, because
+it is exactly the shape of problem that would otherwise justify the more
+expensive instance, and it did not survive being looked at.
 
-For everything else, the question is only ever: does anything use it? Measured,
-rather than assumed — counting AVX-512 kernel symbols in the shipped binaries:
+Otherwise the question is only ever: does anything use it? Measured, rather
+than assumed — counting AVX-512 kernel symbols in the shipped binaries:
 
 | Stage | Runtime | AVX-512 kernels shipped? |
 | --- | --- | --- |
@@ -620,7 +611,7 @@ rather than assumed — counting AVX-512 kernel symbols in the shipped binaries:
 | `medaka` — opt-in | PyTorch 2.3.1 | **Yes** — 3390 symbols in `libtorch_cpu.so` |
 | `bcftools` — opt-in | C / htslib | No |
 | minimap2, samtools, fastp, snpEff | SSE/AVX2, Java | No |
-| **vcflib** (`snippy-fasta` only) | C++ | **Required, not optional** — see above |
+| vcflib (`snippy-fasta`) | C++ | No, once pinned to 1.0.2 — 1.0.10 required it |
 
 The stock TensorFlow build targets an AVX2 baseline — it is the same build
 that prints *"rebuild TensorFlow with the appropriate compiler flags"* about
@@ -672,7 +663,7 @@ making in week one.
 > Every tool image is `linux/amd64`. On arm64 they run under emulation, and
 > the vcflib binaries in the Snippy image die with SIGILL under it — exactly
 > the failure documented under
-> [Apple Silicon](#-apple-silicon-cannot-run-snippy-fasta). `snippy-fasta`
+> [`snippy-fasta` and AVX-512](#snippy-fasta-and-avx-512). `snippy-fasta`
 > would be broken on arrival and could not be fixed from this side.
 > The instance family is not a reversible decision once data is on the volume.
 
@@ -1031,6 +1022,36 @@ executing when you restart the worker is lost and has to be resubmitted —
 returns the original rather than starting a second one.
 
 Or let CI do it, below.
+
+### Continuous integration
+
+Three workflows, and only **one fires per event** — there is no path where the
+suite runs twice.
+
+| Workflow | Fires on | Contains |
+| --- | --- | --- |
+| `tests.yml` | pull requests; called by `deploy` | `test`, `snippy-fasta`, `production-image` |
+| `images.yml` | called by `deploy`; manual dispatch | build → push → lock → commit |
+| `deploy.yml` | pushes to `main`; manual dispatch | `images` → `test` → `deploy` |
+
+**On a PR:** `tests.yml` alone. **On a merge:** `deploy.yml` alone, which calls
+the other two as jobs. Neither `tests.yml` nor `images.yml` has a `push`
+trigger, which is what stops the duplication — previously a merge ran the full
+suite twice, once standalone and once inside the deploy.
+
+**The chain is ordered, not parallel, and that matters.** Everything downstream
+resolves images through `images.lock.json`: the suite pulls what a manifest
+declares, and the host refuses to start on an unpinned tag
+(`REQUIRE_PINNED_IMAGES`). As two independent push-triggered workflows they
+raced, and the deploy lost — failing on an image the other workflow was still
+building. Now nothing looks for an image before it is published.
+
+`images.yml` skips itself unless a Dockerfile or manifest changed, **or the
+lock is stale** — meaning a manifest declares a version the lock has no digest
+for, which is exactly what a version bump leaves behind. Most deploys pay
+nothing for the step. It also reports the commit it leaves `main` on, because
+if it refreshed the lock, that commit is the only one whose
+`images.lock.json` matches the manifests.
 
 ### Continuous deployment
 
@@ -1624,54 +1645,49 @@ The full log is at `runs/<run-id>/logs/NN_<stage>.log`, and **its first line is
 the exact `docker run` command**. Copy that line, run it yourself, and you have
 reproduced the failure with no Python in the way.
 
-### ⚠ Apple Silicon cannot run `snippy-fasta`
+### `snippy-fasta` and AVX-512
 
-`ont-lsdv` runs end to end on both architectures. `snippy-fasta` does not run on
-an M-series Mac at all, and cannot be made to. Both escape routes are closed:
+For months this section said Apple Silicon could not run `snippy-fasta` and
+could not be made to. That was wrong, and the way it was wrong is worth keeping.
 
-**Emulation fails.** The tool images are `linux/amd64` — native on a Linux
-x86-64 box, emulated on a Mac. Most tools survive that; the vcflib binaries in
-the Snippy image do not. `vcfstreamsort` and `vcfuniq` die with SIGILL
-(exit 132).
+**The symptom.** `vcfstreamsort` and `vcfuniq` died with SIGILL (exit 132)
+partway through Snippy, right after `freebayes-parallel`. On a Mac that looks
+exactly like an emulation limit, and it was diagnosed as one.
 
-The instruction in question is now known: those binaries are **EVEX-encoded**,
-i.e. compiled with AVX-512 (`vpternlogd`, `%k1` mask registers). No emulator
-implements AVX-512, and neither does any CPU without it — which is why this is
-not really an Apple Silicon problem at all. See the next section. Snippy gets as far as `freebayes-parallel` and dies in the pipe
-after it, so bwa, samclip, samtools and freebayes all demonstrably work — it is
-specifically vcflib.
+**The actual cause.** Those binaries were compiled with **AVX-512** —
+EVEX-encoded, using `vpternlogd` and `%k1` mask registers. They raise SIGILL on
+any CPU without it. Apple Silicon's x86 emulator has none, but neither does a
+hosted CI runner, and neither does **AMD EPYC Milan**, which is the `m6a`
+instance this service runs on. One cause, three "different" failures.
 
-**A native arm64 image is not buildable.** snippy 4.6.0 pins
-`vcflib >=1.0.0_rc3,<=1.0.2` and `tabixpp 1.1.0`, and bioconda publishes no
-`linux-aarch64` build of either, so the environment does not solve. Newer vcflib
-builds for aarch64 exist (1.0.9+) but snippy 4.6.0 will not accept them, and
-changing snippy's version to suit a laptop would mean local results no longer
-match what production computes — the exact thing pinning exists to prevent.
+**Why the binaries were built that way.** They were not the version anyone
+intended. `snippy=4.6.0` declares only `vcflib >=1.0.0_rc3` — no upper bound —
+so conda resolved **vcflib 1.0.10**, whose published build carries AVX-512.
+Every published **1.0.2** build is plain SSE2 with none, and 1.0.2 satisfies
+snippy's constraint. Pinning it is the whole fix.
 
-**So CI is meant to run it instead** — `.github/workflows/snippy-e2e.yml`, on a
-hosted amd64 runner, executing the pipeline end to end and asserting it finds
-the three planted variants. Exit status alone is not enough there: Snippy can
-complete having called nothing, and a wrong reference or an empty alignment both
-look like success.
+The old text also claimed snippy 4.6.0 pins `vcflib <=1.0.2` and that this made
+an arm64 image unbuildable. It does not pin that; the constraint above is what
+it actually declares.
 
-> ### ⚠ It has never passed
->
-> Every run to date dies at `freebayes-parallel`, within about a second, on a
-> **native amd64 runner** — so whatever this is, it is not the emulation
-> problem described above. All of `freebayes-parallel`, GNU `parallel`,
-> `freebayes` and the vcflib binaries are present in the image, so it is not a
-> missing dependency either.
->
-> Snippy writes the real error to `work/snippy/snps.log` and prints only
-> *"Error running command, check &lt;path&gt;"* to stdout, and CI was not
-> collecting that file — which is exactly why this has stayed undiagnosed. The
-> workflow now dumps it into the run log and uploads the run directory as an
-> artifact, so the next failure says what actually happened.
->
-> **This does not gate deploys.** `deploy.yml` calls `tests.yml`, and
-> `snippy-e2e.yml` is separate — gating on a pipeline that has never passed
-> would mean no deploy could ever run. `ont-lsdv` is verified end to end and is
-> what the service runs today.
+**Verified.** With the pin, `snippy-fasta` runs end to end **on Apple Silicon**
+and reports all three planted variants:
+
+```text
+snp_count      3
+variant_count  3
+by_effect      {'missense_variant': 2, 'synonymous_variant': 1}
+SUCCEEDED in 16.3s
+```
+
+So a developer on a Mac can now run and change this pipeline directly, and CI
+is a check rather than the only place it executes.
+
+**The lesson is the one already in this file** — *pin every version, including
+transitive ones.* This is the second time an unpinned transitive dependency has
+broken a tool here. The first resolved `python-kaleido` to a major version that
+removed a module NanoPlot imports. Both were invisible until something died at
+runtime, and both were one pin away.
 
 ### How the dev container is wired
 
@@ -1987,19 +2003,15 @@ not a result.
    contigs do not match the reference is now rejected outright. But no run has
    ever used a genuine LSDV amplicon design, because nobody has supplied one.
    Until then, leave `primer.enabled` false.
-6. **`snippy-fasta` needs AVX-512, so it does not run on most hardware.**
-   `vcfstreamsort` and `vcfuniq` in the Snippy image are EVEX-encoded and raise
-   SIGILL on any CPU without AVX-512 — which covers Apple Silicon's emulator,
-   the hosted CI runner, and AMD EPYC Milan (`m6a`). Every CI run has failed;
-   there has never been a green one, and this entry once described that job as
-   a working safety net.
-
-   **The fix is to rebuild the image, not to buy Intel.** vcflib must be
-   compiled against a portable baseline (`-march=x86-64-v2`), which means
-   building it from source in `shared/docker/snippy/Dockerfile` rather than
-   taking the bioconda binary — snippy 4.6.0 pins `vcflib <=1.0.2`, so a newer
-   published build is not an option. Until then **treat `snippy-fasta` as
-   unavailable**; `ont-lsdv` works and is verified end to end.
+6. **`snippy-fasta`'s fix reaches a host only after the next deploy.** The
+   AVX-512 crash is diagnosed, fixed by pinning `vcflib=1.0.2`, and verified
+   end to end — see
+   [`snippy-fasta` and AVX-512](#snippy-fasta-and-avx-512). The rebuilt image
+   (`4.6.0-2`) is published by the `images` job of the next deploy, which also
+   refreshes `images.lock.json`. Until that runs, a deployed host still has
+   `4.6.0-1` and still fails on any CPU without AVX-512 — the resolver warns
+   loudly and falls back to the tag rather than silently running the old
+   image.
 7. **Variant calls have only been checked against synthetic reads.** All three
    ONT callers report exactly the planted substitutions, which proves the
    invocations, the plumbing and the resource limits. It proves nothing about
