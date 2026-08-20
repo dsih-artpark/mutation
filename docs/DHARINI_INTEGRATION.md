@@ -270,6 +270,12 @@ and letting a browser choose it re-opens an SSRF hole.
 Sending `owner_id` on every submission now costs nothing and is what makes
 browser-scoped reads possible later without a backfill. **Do it from day one.**
 
+⚠ **Because auth is off, the pipeline service is not reachable from the public
+internet.** Its security group allows inbound `8000` only from Dharini's
+security group. So every call must originate from Dharini's server — a browser
+`fetch()` straight at `PIPELINE_URL` will not connect, and that is deliberate,
+not a firewall to get opened. Proxy progress polls through a Dharini route.
+
 ---
 
 ## Endpoint migration

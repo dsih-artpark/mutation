@@ -104,7 +104,7 @@ def validate_input_key(key: str) -> str:
     and cannot escape a prefix. The prefix check below is therefore the real
     control, and the shape checks are belt and braces that cost nothing.
 
-    Note the prefix itself always ends in '/' (see config._prefix), so this
+    Note the prefix itself always ends in '/' (a config.py constant), so this
     matches a whole path segment -- 'uploadsX/evil' does not pass.
     """
     _reject_shape(key)

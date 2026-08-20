@@ -31,10 +31,6 @@ DATA_DIR = BASE_DIR / "data"
 RUNS_ROOT = Path(os.getenv("RUNS_ROOT", str(BASE_DIR / "runs"))).resolve()
 REFS_ROOT = Path(os.getenv("REFS_ROOT", str(DATA_DIR))).resolve()
 
-# Retained for backwards compatibility with visualization.py and the legacy
-# /status and /visualization endpoints.
-RUNS_DIR = RUNS_ROOT
-
 RUNS_ROOT.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -197,8 +193,10 @@ LOCAL_STORAGE_ROOT = Path(
     os.getenv("LOCAL_STORAGE_ROOT", str(RUNS_ROOT / "_objects"))
 ).resolve()
 
-# The ceiling on an object this service is willing to fetch. It no longer
-# the ceiling on an object it is willing to fetch.
+# The ceiling on an object this service is willing to fetch. Enforced twice:
+# by HeadObject at submission time, so a too-large key is a 413 in milliseconds,
+# and again as bytes land during `fetch`, because declared size is metadata and
+# metadata is not a guarantee.
 MAX_INPUT_BYTES = int(os.getenv("MAX_INPUT_BYTES", str(5 * 1024**3)))
 
 S3_UPLOAD_MAX_ATTEMPTS = int(os.getenv("S3_UPLOAD_MAX_ATTEMPTS", "6"))
@@ -272,8 +270,4 @@ CORS_ALLOWED_ORIGINS = [
 HEARTBEAT_INTERVAL_S = int(os.getenv("HEARTBEAT_INTERVAL_S", "10"))
 ETA_HISTORY_RUNS = int(os.getenv("ETA_HISTORY_RUNS", "50"))
 ETA_CACHE_TTL_S = int(os.getenv("ETA_CACHE_TTL_S", "60"))
-
-# --------------------------------------------------------------------------
-# Upload limits
-# --------------------------------------------------------------------------
 
