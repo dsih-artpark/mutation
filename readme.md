@@ -546,8 +546,24 @@ the service can start successfully.
 | **Architecture** | **x86_64 only** — see the warning below |
 | **Type** | `m6a.xlarge` — 4 vCPU, 16 GiB, AMD EPYC |
 | **AMI** | **Ubuntu 24.04 LTS**, x86_64 |
-| **Storage** | gp3, **100 GB** to start, 3000 IOPS (the default) |
+| **Storage** | gp3, **100 GB** to start, 3000 IOPS (the default), **encrypted** |
 | **Region** | `ap-south-1` — same as the bucket |
+
+> ### ⚠ Tick "Encrypt this volume" in the launch wizard
+>
+> EBS encryption is **free** — no cost, no measurable performance difference —
+> and it is the one setting on this page that **cannot be changed in place
+> afterwards**. Turning it on later means snapshotting the volume, copying the
+> snapshot with encryption enabled, restoring it and swapping the root device,
+> on a machine that by then holds a live database.
+>
+> Every FASTQ that lands in `$RUNS_ROOT`, and every consensus and VCF derived
+> from it, sits unencrypted on that volume for the whole run and for
+> `RETENTION_HOURS` afterwards. One checkbox now, or an outage later.
+>
+> Set the account-wide default while you are there — EC2 → Settings → Data
+> protection and security → **Always encrypt new EBS volumes** — so the next
+> person launching an instance cannot forget.
 
 ### Cost
 
