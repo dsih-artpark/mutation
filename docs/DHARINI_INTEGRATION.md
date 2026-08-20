@@ -35,18 +35,23 @@ Browser picks a FASTA/FASTQ. Dharini mints a presigned `PUT` for a key **it**
 chooses, under the `uploads/` prefix, and the browser PUTs directly to S3.
 
 ```
-<S3_FOLDER>/uploads/<user-id>/<upload-id>/<filename>
+SDS004-ES_App_Data/genomic-sequencing/uploads/<user-id>/<upload-id>/<filename>
 
-e.g.  SDS004-ES_App_Data/uploads/u17/2f8c/reads.fastq.gz
+e.g.  SDS004-ES_App_Data/genomic-sequencing/uploads/u17/2f8c/reads.fastq.gz
 ```
 
-⚠ **`<S3_FOLDER>` is your existing `S3_FOLDER` value and it is part of the
-key.** The pipeline service is configured with the identical string as
-`S3_PREFIX` and only accepts keys beginning `<S3_PREFIX>uploads/`. If the two
-disagree, every submission comes back `422 … does not exist` — the object is
-real, it is simply not where the pipeline service looks. `GET /health` on the
-pipeline service prints the prefixes it is actually using; compare them against
-yours before debugging anything else.
+⚠ **Note the `genomic-sequencing/` segment — it is NOT your existing
+`S3_FOLDER` value.** This pipeline owns a subfolder inside the app-data folder
+so its files do not sit beside other workloads'. Your `S3_FOLDER` is still
+`SDS004-ES_App_Data`; genomics upload keys get `genomic-sequencing/` appended
+after it. Compose the key rather than reusing `S3_FOLDER` alone.
+
+The pipeline service is configured with `S3_PREFIX=SDS004-ES_App_Data/genomic-sequencing`
+and accepts only keys beginning `<S3_PREFIX>/uploads/`. If the two disagree,
+every submission comes back `422 … does not exist` — the object is real, it is
+simply not where the pipeline service looks. `GET /health` on the pipeline
+service prints the prefixes it is actually using; compare them against yours
+before debugging anything else.
 
 Beyond the prefix, the service rejects `..`, leading `/`, empty segments,
 control characters and keys over 1024 bytes. Keep the layout inside the prefix.
@@ -67,10 +72,10 @@ X-API-Key: {PIPELINE_API_KEY}          # see "Auth is currently OFF" below
   "pipeline_id":      "ont-lsdv",              // from GET /v1/pipelines
   "external_id":      "dharini-job-8831",      // REQUIRED. See below.
   "owner_id":         "u17",                   // which Dharini user owns this
-  "input_key":        "SDS004-ES_App_Data/uploads/u17/2f8c/reads.fastq.gz",
+  "input_key":        "SDS004-ES_App_Data/genomic-sequencing/uploads/u17/2f8c/reads.fastq.gz",
   "input_filename":   "Sample_42_reads.fastq.gz",   // optional, display only
   "extra_input_keys": {
-      "primer_bed": "SDS004-ES_App_Data/uploads/u17/2f8c/scheme.bed" },
+      "primer_bed": "SDS004-ES_App_Data/genomic-sequencing/uploads/u17/2f8c/scheme.bed" },
   "params":           { "variant": {"tool": "clair3"}, "threads": 4 },
   "callback_url":     "https://dharini.example.org/api/pipeline/webhook"
 }

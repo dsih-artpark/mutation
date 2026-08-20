@@ -241,9 +241,9 @@ curl -X POST localhost:8000/v1/runs \
         "pipeline_id": "ont-lsdv",
         "external_id": "dharini-job-8831",
         "owner_id": "u17",
-        "input_key": "SDS004-ES_App_Data/uploads/u17/2f8c/reads.fastq.gz",
+        "input_key": "SDS004-ES_App_Data/genomic-sequencing/uploads/u17/2f8c/reads.fastq.gz",
         "extra_input_keys": {
-          "primer_bed": "SDS004-ES_App_Data/uploads/u17/2f8c/scheme.bed"},
+          "primer_bed": "SDS004-ES_App_Data/genomic-sequencing/uploads/u17/2f8c/scheme.bed"},
         "params": {"variant": {"tool": "clair3"}, "threads": 4},
         "callback_url": "https://dharini.example.org/api/snp/webhook"
       }'
@@ -419,11 +419,11 @@ X-Dharini-Signature: sha256=<hmac>
                    "filename": "annotated.vcf", "size_bytes": 48210,
                    "content_type": "text/plain",
                    "bucket": "dsih-artpark-04-staging-data",
-                   "key": "SDS004-ES_App_Data/runs/<run_id>/annotated.vcf" } ],
+                   "key": "SDS004-ES_App_Data/genomic-sequencing/runs/<run_id>/annotated.vcf" } ],
   "artifacts_uploaded": true,
   "artifacts_error": null,
   "output": { "bucket": "dsih-artpark-04-staging-data",
-              "prefix": "SDS004-ES_App_Data/runs/<run_id>/" }
+              "prefix": "SDS004-ES_App_Data/genomic-sequencing/runs/<run_id>/" }
 }
 ```
 
@@ -543,11 +543,32 @@ the service can start successfully.
 
 | | |
 | --- | --- |
-| **Architecture** | **x86_64 only.** See the warning below. |
-| **Type** | `m6i.xlarge` (4 vCPU / 16 GiB) is the honest floor: `MAX_STAGE_CPUS=4`, `MAX_STAGE_MEMORY_GB=8`, `WORKER_CONCURRENCY=1`. Go to `c6i.2xlarge` before raising concurrency. |
-| **AMI** | Ubuntu 24.04 LTS or Amazon Linux 2023, x86_64 |
-| **Storage** | gp3, **≥ 100 GB**. ~9 GB of tool images, plus run scratch — a 2 GB FASTQ expands several-fold through its SAM/BAM intermediates before `work/` is deleted. |
-| **Region** | Same as the S3 bucket. Cross-region costs latency on every transfer and per-GB egress on top. |
+| **Architecture** | **x86_64 only** — see the warning below |
+| **Type** | `m6i.xlarge` — 4 vCPU, 16 GiB |
+| **AMI** | **Ubuntu 24.04 LTS**, x86_64 |
+| **Storage** | gp3, **200 GB**, 3000 IOPS (the default) |
+| **Region** | `ap-south-1` — same as the bucket |
+
+**Where `m6i.xlarge` comes from.** The heaviest stages declare `cpus=4,
+memory_gb=8` (Medaka and Clair3; `align` is 4/6), and `WORKER_CONCURRENCY=1`
+means exactly one runs at a time. So the pipeline's own ceiling is 4 vCPU and
+8 GiB, and the rest of the box carries Postgres, Redis, the API, the worker,
+beat and the OS. 4 vCPU / 16 GiB fits that with headroom and no waste.
+
+`c6i.2xlarge` (8 vCPU, 16 GiB) is the upgrade, and only two things justify it:
+raising `WORKER_CONCURRENCY` above 1, or raising `MAX_STAGE_CPUS` above 4 so a
+single alignment goes faster. Do neither on guesswork — `run_stages` records
+real peak memory and wall time per stage, so after ~20 runs the
+[sizing query](#sizing) answers it from your data instead.
+
+**Why 200 GB.** About 9 GB of tool images, then run scratch, which is the part
+that surprises people: a 2 GB compressed FASTQ decompresses to roughly 5 GB and
+passes through SAM and sorted-BAM intermediates several GB each before `work/`
+is deleted. One large run can transiently want 30–50 GB. Local artifacts are
+swept after `RETENTION_HOURS` (6), and S3 holds the durable copy, so this is
+sized for transient peak, not accumulation. 100 GB works for the fixture-sized
+runs; 200 GB is the difference between never thinking about it and debugging a
+disk-full failure four stages into a two-hour run.
 
 > ### ⚠ Do not use Graviton (`m7g`, `c7g`, `t4g`, …)
 >
@@ -561,6 +582,18 @@ the service can start successfully.
 Also avoid the burstable T-family. Genomics pins CPU for minutes at a time; if
 the CPU burst-capacity metric trends to zero you are being throttled and every
 run gets slower without anything reporting an error.
+
+**Why 24.04 LTS and not 26.04.** 24.04 is supported to 2029, which outlasts any
+horizon this decision needs to survive, and Docker's apt repository has carried
+packages for it for two years. 26.04 is four months old; a `.0` LTS is the one
+release where third-party repositories and kernel-adjacent tooling are still
+catching up, and Docker is exactly that kind of dependency.
+
+The deciding point is that **none of what is newer in 26.04 reaches this
+workload.** Every bioinformatics tool ships its own userspace inside its own
+container, pinned by digest — the host contributes a kernel and a Docker
+daemon and nothing else. A newer distro buys newer libraries that no stage will
+ever link against. Take the boring one.
 
 ### 2. The S3 bucket
 
@@ -646,11 +679,11 @@ the instance-profile path:
     { "Sid": "ReadInputs",
       "Effect": "Allow",
       "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::dsih-artpark-04-staging-data/SDS004-ES_App_Data/uploads/*" },
+      "Resource": "arn:aws:s3:::dsih-artpark-04-staging-data/SDS004-ES_App_Data/genomic-sequencing/uploads/*" },
     { "Sid": "WriteResults",
       "Effect": "Allow",
       "Action": "s3:PutObject",
-      "Resource": "arn:aws:s3:::dsih-artpark-04-staging-data/SDS004-ES_App_Data/runs/*" }
+      "Resource": "arn:aws:s3:::dsih-artpark-04-staging-data/SDS004-ES_App_Data/genomic-sequencing/runs/*" }
   ]
 }
 ```
@@ -681,6 +714,12 @@ The secret is shown **once**. Put both values straight into `.env`:
 AWS_ACCESS_KEY_ID=AKIA…
 AWS_SECRET_ACCESS_KEY=…
 ```
+
+⚠ **Set both or neither.** Two empty `AWS_*` variables is a *valid* state
+meaning "use the instance role", so a `.env` that names them anything else --
+Dharini spells them `S3_ACCESSKEYID` / `S3_SECRETACCESSKEY` -- starts cleanly
+and then fails at the first S3 call with `NoCredentialsError`, which reads like
+a broken role rather than a misspelled variable. Use the names above.
 
 Set **both or neither**. One alone is refused at startup, because boto3 ignores
 a lone `aws_access_key_id` and falls through to its chain — the process would
@@ -740,8 +779,8 @@ curl -s localhost:8000/health | jq .storage
 # {
 #   "backend": "s3",
 #   "bucket": "dsih-artpark-04-staging-data",
-#   "input_prefix":  "SDS004-ES_App_Data/uploads/",
-#   "output_prefix": "SDS004-ES_App_Data/runs/",
+#   "input_prefix":  "SDS004-ES_App_Data/genomic-sequencing/uploads/",
+#   "output_prefix": "SDS004-ES_App_Data/genomic-sequencing/runs/",
 #   "reachable": true
 # }
 ```
@@ -978,8 +1017,8 @@ curl localhost:8000/health
   "status": "ok", "pipelines": 2, "worker_concurrency": 1,
   "schema_revision": "0002",
   "storage": {"backend": "s3", "bucket": "dsih-artpark-04-staging-data",
-              "input_prefix": "SDS004-ES_App_Data/uploads/",
-              "output_prefix": "SDS004-ES_App_Data/runs/", "reachable": true},
+              "input_prefix": "SDS004-ES_App_Data/genomic-sequencing/uploads/",
+              "output_prefix": "SDS004-ES_App_Data/genomic-sequencing/runs/", "reachable": true},
   "disk": {"free_gb": 812.4, "total_gb": 999.9, "used_percent": 18.8}
 }
 ```

@@ -181,3 +181,15 @@ def test_a_deployment_dotenv_cannot_reach_the_test_suite(monkeypatch, tmp_path):
     assert config.S3_ALLOWED_PREFIX == "uploads/"
     assert config.S3_BUCKET != "someone-elses-bucket"
     assert config.REQUIRE_PINNED_IMAGES is False
+
+
+# --------------------------------------------------------------------------
+# Nested prefixes and Dharini's variable spellings
+# --------------------------------------------------------------------------
+
+def test_a_nested_prefix_gives_the_pipeline_its_own_subfolder(monkeypatch):
+    """One workload's folder inside a shared app-data folder."""
+    config = _reload(monkeypatch, API_KEYS="d:sk",
+                     S3_PREFIX="SDS004-ES_App_Data/genomic-sequencing")
+    assert config.S3_ALLOWED_PREFIX == "SDS004-ES_App_Data/genomic-sequencing/uploads/"
+    assert config.S3_OUTPUT_PREFIX == "SDS004-ES_App_Data/genomic-sequencing/runs/"
