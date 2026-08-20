@@ -374,7 +374,8 @@ about 1h 25m before this starts"* instead of an unqualified "queued".
 | `GET /v1/runs/{id}/artifacts/{filename}` | either | download a result file — kept for operational debugging; Dharini mints its own presigned S3 GET for an end user |
 | `POST /v1/runs/{id}/redeliver` | service only | re-send the webhook manually |
 | `POST /v1/runs/{id}/reupload` | service only | re-run artifact publication, after an S3 outage longer than the retry schedule |
-| `GET /health` | open | liveness, disk, schema revision, storage reachability |
+| `GET /v1/system` | either | bucket, prefixes, pipeline versions, resolved image digests, limits |
+| `GET /health` | open | liveness, disk, schema revision, storage reachability — nothing that names the bucket |
 
 The **Credential** column describes the rules once `API_KEYS` is set. With auth
 off, "either" and "service only" both mean *no credential required*.
@@ -591,9 +592,27 @@ x86_64, every tool image is `linux/amd64`, and AMD runs it natively. Nothing
 like the Graviton problem.
 
 The one real architectural difference is **AVX-512**, which Ice Lake has and
-Milan does not. So the question is only ever: does anything in these pipelines
-use it? Measured, rather than assumed — counting AVX-512 kernel symbols in the
-shipped binaries:
+Milan does not.
+
+> ### ⚠ `snippy-fasta` requires AVX-512 and therefore cannot run on `m6a`
+>
+> Not as an optimisation — as an instruction set it will not start without.
+> `vcfstreamsort` and `vcfuniq` in the Snippy image are EVEX-encoded
+> (`vpternlogd`, `%k1` mask registers, the `62` prefix), so they raise SIGILL
+> on any CPU without AVX-512. That is one root cause for all three known
+> failures: Apple Silicon's x86 emulation, the hosted CI runner, and — by
+> construction — AMD Milan.
+>
+> This does **not** change the recommendation, because `snippy-fasta` does not
+> currently work anywhere (see [Known gaps](#known-gaps)) and `ont-lsdv` is
+> what the service runs. But it does mean the fix is to **rebuild the Snippy
+> image against a portable baseline**, not to buy an Intel instance. Paying 82%
+> more forever to accommodate one badly-compiled conda package is the wrong
+> trade; if `snippy-fasta` is needed before that rebuild happens, `m6i.xlarge`
+> is the stopgap.
+
+For everything else, the question is only ever: does anything use it? Measured,
+rather than assumed — counting AVX-512 kernel symbols in the shipped binaries:
 
 | Stage | Runtime | AVX-512 kernels shipped? |
 | --- | --- | --- |
@@ -601,6 +620,7 @@ shipped binaries:
 | `medaka` — opt-in | PyTorch 2.3.1 | **Yes** — 3390 symbols in `libtorch_cpu.so` |
 | `bcftools` — opt-in | C / htslib | No |
 | minimap2, samtools, fastp, snpEff | SSE/AVX2, Java | No |
+| **vcflib** (`snippy-fasta` only) | C++ | **Required, not optional** — see above |
 
 The stock TensorFlow build targets an AVX2 baseline — it is the same build
 that prints *"rebuild TensorFlow with the appropriate compiler flags"* about
@@ -997,6 +1017,8 @@ If that times out from Dharini but works locally, it is the security group.
 
 ### Updating a running deployment
 
+By hand:
+
 ```bash
 cd /srv/dharini/app && git pull
 docker compose up -d --build     # migrations run at API startup
@@ -1004,9 +1026,122 @@ make images-pull                 # only if images.lock.json changed
 ```
 
 Rebuilding does not touch `/srv/dharini/runs` or the Postgres volume. A run
-that is executing when you restart the worker is lost and has to be
-resubmitted — `external_id` makes that safe, since a resubmit that reaches a
-still-live run returns the original rather than starting a second one.
+executing when you restart the worker is lost and has to be resubmitted —
+`external_id` makes that safe, since a resubmit reaching a still-live run
+returns the original rather than starting a second one.
+
+Or let CI do it, below.
+
+### Continuous deployment
+
+`.github/workflows/deploy.yml` runs the full suite, then deploys to this host
+from a **self-hosted runner installed on the host itself**.
+
+**Why a self-hosted runner and not SSH from a hosted one.** The runner polls
+GitHub outbound, so port 22 need not be open to the internet at all, and no
+long-lived SSH private key sits in GitHub secrets. Those are exactly the two
+things the SSH approach would have required.
+
+> ### ⚠ Two conditions this depends on
+>
+> **The repository must stay private.** A self-hosted runner on a public
+> repository executes code from fork pull requests on your server. The
+> workflow never triggers on `pull_request` for that reason, but the
+> repository setting is the control that actually matters.
+>
+> **Anyone who can push to `main` can run commands as a user in the `docker`
+> group**, which is root-equivalent on this host.
+>
+> Branch protection would normally fence that, but **it is unavailable on a
+> private repository on GitHub Free** — both classic protection and rulesets
+> return `403 Upgrade to GitHub Pro`. So on this plan the control is simply
+> the push-access list. That is defensible for a single maintainer, and stops
+> being defensible the moment a collaborator is added or this stops being
+> staging. Keep 2FA on the account that holds push access, and revisit before
+> either of those changes.
+
+#### Installing the runner
+
+On the EC2 host, as the same user that owns `/srv/dharini/app` — it inherits
+that user's deploy key, which is what lets the deploy step fetch:
+
+```bash
+mkdir -p ~/actions-runner && cd ~/actions-runner
+
+# linux-x64. The repository's "New self-hosted runner" page defaults to
+# whichever OS GitHub thinks you are on, and the macOS tarball installs
+# perfectly happily here -- then fails at config.sh with
+# "cannot execute binary file: Exec format error", because Runner.Listener is
+# a Mach-O binary. Read the URL before running it.
+#
+# There is no version-agnostic download: every asset name embeds the version,
+# so `releases/latest/download/actions-runner-linux-x64.tar.gz` is a 404.
+VERSION=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest \
+          | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+curl -fsSL -o runner.tar.gz \
+  "https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-linux-x64-${VERSION}.tar.gz"
+tar xzf runner.tar.gz
+
+# libicu and friends. Absent from a minimal Ubuntu cloud image, and .NET does
+# not start without them.
+sudo ./bin/installdependencies.sh
+```
+
+Then get a registration token from **Settings → Actions → Runners → New
+self-hosted runner** on the repository, and:
+
+```bash
+./config.sh --url https://github.com/<owner>/<repo> --token <TOKEN> \
+            --name dharini-ec2 --labels dharini --unattended
+
+sudo ./svc.sh install $USER      # run as this user, not root
+sudo ./svc.sh start
+sudo ./svc.sh status
+```
+
+The **`dharini` label is load-bearing** — the workflow targets
+`runs-on: [self-hosted, dharini]`, so a runner without it is never selected
+and the job queues forever. `jq` and `make` must be installed; they are in the
+[host setup](#5-host-setup) step above.
+
+#### What a deploy does
+
+1. Runs the whole of `tests.yml`, including the `snippy-fasta` end-to-end run
+   that no developer machine can execute. Slow, and the right thing to be slow
+   about.
+2. Records the currently deployed SHA, for rollback.
+3. Fetches and checks out the target — resolved through `origin/` first,
+   because `git checkout main` on a host that has fetched but never merged
+   checks out the *local* `main` and reports a successful deploy that changed
+   nothing.
+4. Pulls tool images only if `images.lock.json` moved. Digests are pinned, so
+   a new image reaches the host only when pulled — and most deploys skip the
+   ~9 GB.
+5. `docker compose up -d --build`, then polls `/health` for up to five
+   minutes, requiring `status: ok`, `storage.reachable: true` and a non-null
+   `schema_revision`.
+6. **On any failure, restores the previous SHA and rebuilds.**
+
+`concurrency: deploy-production` with `cancel-in-progress: false` means never
+two deploys at once and never a cancelled one — a job killed between
+`git checkout` and `docker compose up` leaves the host on code no commit
+describes.
+
+> **Rollback restores the code, not the schema.** `init_db()` runs
+> `alembic upgrade head` at API startup and there is no automatic downgrade, so
+> a deploy that migrated and *then* failed leaves the schema ahead of the
+> restored code. The workflow says so in its output rather than implying a
+> clean revert. Compare `schema_revision` on `/health` against what the
+> restored code expects, and decide deliberately.
+
+#### Deploying
+
+Merging to `main` deploys. To deploy something else, use **Actions → deploy →
+Run workflow** and pick the branch — leave the `ref` input empty and it
+deploys the branch you dispatched from, which is also the branch the tests ran
+against. Filling it in with a different ref means testing one thing and
+deploying another, which is occasionally what you want and never what you want
+by accident.
 
 ### Versioning and lifecycle: both off, deliberately
 
@@ -1083,33 +1218,78 @@ make migration m="…"    # generate a new revision after changing app/models.py
 run" and "the code is newer than the schema" don't look identical from
 outside.
 
-### `/health`
+### `/health` and `/v1/system`
 
-```bash
-curl localhost:8000/health
-```
+Two endpoints, split by who can reach them.
+
+**`GET /health` — unauthenticated, and carries nothing that helps a caller
+aim.** This is the route that ends up exposed: load-balancer target groups,
+uptime monitors and container probes all hit it, and it is the first thing
+anyone opens to the world.
 
 ```json
 {
   "status": "ok", "pipelines": 2, "worker_concurrency": 1,
   "schema_revision": "0002",
-  "storage": {"backend": "s3", "bucket": "dsih-artpark-04-staging-data",
-              "input_prefix": "SDS004-ES_App_Data/genomic-sequencing/uploads/",
-              "output_prefix": "SDS004-ES_App_Data/genomic-sequencing/runs/", "reachable": true},
-  "disk": {"free_gb": 812.4, "total_gb": 999.9, "used_percent": 18.8}
+  "storage": {"backend": "s3", "reachable": true},
+  "disk": {"free_gb": 81.4, "total_gb": 102.9, "used_percent": 20.9}
 }
 ```
 
-Always `200` while the process itself is up. Storage being unreachable is
-reported in `storage.reachable` rather than failing the check: taking every
-instance out of rotation because S3 blipped turns a degradation into an
-outage, and this is what an operator actually reads to tell "the process is
-dead" apart from "the process is fine but can't reach S3" apart from "the
-schema is behind the code" — three failure modes that otherwise look
+Always `200` while the process is up. Storage being unreachable is reported in
+the body rather than failing the check: taking every instance out of rotation
+because S3 blipped turns a degradation into an outage. This is what tells "the
+process is dead" apart from "the process is fine but cannot reach S3" apart
+from "the schema is behind the code" — three failure modes that otherwise look
 identical from outside, at 2am, on a run that has been computing for forty
 minutes.
 
----
+On failure `storage.error` is the exception **type** and nothing more
+(`NoCredentialsError`, `EndpointConnectionError`, `ClientError`). Those already
+separate the failure modes worth acting on, while the message would hand an
+unauthenticated caller the bucket name, the key and sometimes the account id.
+
+**`GET /v1/system` — behind the credential, and carries the detail.**
+
+```bash
+curl -s localhost:8000/v1/system | jq
+```
+
+```jsonc
+{
+  "schema_revision": "0002",
+  "storage": {
+    "backend": "s3", "bucket": "dsih-artpark-04-staging-data",
+    "input_prefix":  "SDS004-ES_App_Data/genomic-sequencing/uploads/",
+    "output_prefix": "SDS004-ES_App_Data/genomic-sequencing/runs/",
+    "reachable": true, "error": null      // full message, not just the type
+  },
+  "pipelines": [
+    { "id": "ont-lsdv", "version": "1.1.0",
+      "stages": ["fetch", "prepare", …, "publish"],
+      "images": ["hkubal/clair3@sha256:57cf5d20…",
+                 "quay.io/biocontainers/medaka@sha256:…",
+                 "dsihartpark/dharini-ont-core@sha256:314f8675…"] }
+  ],
+  "limits": { "worker_concurrency": 1, "max_input_bytes": 5368709120,
+              "local_retention_hours": 6, "require_pinned_images": true }
+}
+```
+
+The prefixes are here because a prefix that disagrees with Dharini's
+`S3_FOLDER` fails as *"object does not exist"* — indistinguishable from a
+typo'd key, since the service cannot list the bucket. Printing what it is
+actually looking under is what separates the two.
+
+`images` is the **resolved digest** for every image each pipeline will run, so
+"which build of Medaka produced this result" has an answer months later. That
+is the question a variant call is worth nothing without.
+
+> **There is deliberately no "is this image pulled" field.** Answering it means
+> talking to the Docker daemon, and the API container does not mount the socket
+> — only the worker does, because that socket is root-equivalent access to the
+> host. Mounting it here to satisfy a status page would trade a real security
+> boundary for a convenience. `make images-list` on the host answers it.
 
 ## Operations
 
@@ -1452,8 +1632,12 @@ an M-series Mac at all, and cannot be made to. Both escape routes are closed:
 **Emulation fails.** The tool images are `linux/amd64` — native on a Linux
 x86-64 box, emulated on a Mac. Most tools survive that; the vcflib binaries in
 the Snippy image do not. `vcfstreamsort` and `vcfuniq` die with SIGILL
-(exit 132), because the emulator does not implement every instruction they were
-compiled to use. Snippy gets as far as `freebayes-parallel` and dies in the pipe
+(exit 132).
+
+The instruction in question is now known: those binaries are **EVEX-encoded**,
+i.e. compiled with AVX-512 (`vpternlogd`, `%k1` mask registers). No emulator
+implements AVX-512, and neither does any CPU without it — which is why this is
+not really an Apple Silicon problem at all. See the next section. Snippy gets as far as `freebayes-parallel` and dies in the pipe
 after it, so bwa, samclip, samtools and freebayes all demonstrably work — it is
 specifically vcflib.
 
@@ -1464,14 +1648,30 @@ builds for aarch64 exist (1.0.9+) but snippy 4.6.0 will not accept them, and
 changing snippy's version to suit a laptop would mean local results no longer
 match what production computes — the exact thing pinning exists to prevent.
 
-**So CI runs it instead.** `.github/workflows/tests.yml` has a `snippy-fasta`
-job on an amd64 runner that executes the pipeline end to end and asserts it
-finds the three planted variants. Exit status alone is not enough there: Snippy
-can complete having called nothing, and a wrong reference or an empty alignment
-both look like success.
+**So CI is meant to run it instead** — `.github/workflows/snippy-e2e.yml`, on a
+hosted amd64 runner, executing the pipeline end to end and asserting it finds
+the three planted variants. Exit status alone is not enough there: Snippy can
+complete having called nothing, and a wrong reference or an empty alignment both
+look like success.
 
-If you are changing `snippy-fasta`, push the branch and read that job. It is the
-only place the pipeline actually runs.
+> ### ⚠ It has never passed
+>
+> Every run to date dies at `freebayes-parallel`, within about a second, on a
+> **native amd64 runner** — so whatever this is, it is not the emulation
+> problem described above. All of `freebayes-parallel`, GNU `parallel`,
+> `freebayes` and the vcflib binaries are present in the image, so it is not a
+> missing dependency either.
+>
+> Snippy writes the real error to `work/snippy/snps.log` and prints only
+> *"Error running command, check &lt;path&gt;"* to stdout, and CI was not
+> collecting that file — which is exactly why this has stayed undiagnosed. The
+> workflow now dumps it into the run log and uploads the run directory as an
+> artifact, so the next failure says what actually happened.
+>
+> **This does not gate deploys.** `deploy.yml` calls `tests.yml`, and
+> `snippy-e2e.yml` is separate — gating on a pipeline that has never passed
+> would mean no deploy could ever run. `ont-lsdv` is verified end to end and is
+> what the service runs today.
 
 ### How the dev container is wired
 
@@ -1787,11 +1987,19 @@ not a result.
    contigs do not match the reference is now rejected outright. But no run has
    ever used a genuine LSDV amplicon design, because nobody has supplied one.
    Until then, leave `primer.enabled` false.
-6. **`snippy-fasta` is only ever exercised on amd64.** Its reference-path bug is
-   fixed, and CI now runs it end to end and asserts the variant count. But no
-   Apple Silicon machine can run it — see the note above — so a developer on a
-   Mac changing that pipeline is relying entirely on CI to tell them whether it
-   works.
+6. **`snippy-fasta` needs AVX-512, so it does not run on most hardware.**
+   `vcfstreamsort` and `vcfuniq` in the Snippy image are EVEX-encoded and raise
+   SIGILL on any CPU without AVX-512 — which covers Apple Silicon's emulator,
+   the hosted CI runner, and AMD EPYC Milan (`m6a`). Every CI run has failed;
+   there has never been a green one, and this entry once described that job as
+   a working safety net.
+
+   **The fix is to rebuild the image, not to buy Intel.** vcflib must be
+   compiled against a portable baseline (`-march=x86-64-v2`), which means
+   building it from source in `shared/docker/snippy/Dockerfile` rather than
+   taking the bioconda binary — snippy 4.6.0 pins `vcflib <=1.0.2`, so a newer
+   published build is not an option. Until then **treat `snippy-fasta` as
+   unavailable**; `ont-lsdv` works and is verified end to end.
 7. **Variant calls have only been checked against synthetic reads.** All three
    ONT callers report exactly the planted substitutions, which proves the
    invocations, the plumbing and the resource limits. It proves nothing about

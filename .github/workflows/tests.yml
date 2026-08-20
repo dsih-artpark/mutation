@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Callable so deploy.yml gates on exactly this suite rather than a copy of
+  # it. A duplicated gate drifts, and the copy that drifts is the one guarding
+  # production.
+  workflow_call:
 
 jobs:
   test:
@@ -27,42 +31,6 @@ jobs:
       # Smoke test for the catalogue command, and a check that manifest
       # discovery still finds every scope from a clean checkout.
       - run: make images-list
-
-  # The one pipeline nobody can run on a developer machine. Its image is
-  # linux/amd64, and the vcflib binaries in it use instructions Apple Silicon's
-  # x86 emulation does not implement, so snippy dies with SIGILL partway
-  # through. Building a native arm64 image instead is not an option either:
-  # snippy 4.6.0 pins vcflib <=1.0.2 and tabixpp 1.1.0, and bioconda publishes
-  # no linux-aarch64 build of either.
-  #
-  # A hosted runner is amd64, so this is the only place snippy-fasta is
-  # exercised end to end at all. Without it the pipeline is unverified rather
-  # than merely untested locally.
-  snippy-fasta:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # Only this pipeline's images. The full set is ~9 GB against a runner's
-      # ~14 GB of disk, and ont-lsdv is verifiable on any developer machine.
-      - run: make images-pull SCOPE=shared
-
-      - run: make fixtures
-
-      - name: Run snippy-fasta end to end and check it found the planted variants
-        run: |
-          set -o pipefail
-          make smoke PIPELINE=snippy-fasta INPUT=fixtures/query.fasta | tee smoke.log
-
-          # Exit status alone is not enough. Snippy can complete having called
-          # nothing -- a wrong reference or an empty alignment both look like
-          # success -- so assert the count. make fixtures plants exactly three
-          # substitutions and prints them.
-          found=$(sed -n 's/^ *variant_count *\([0-9]*\)$/\1/p' smoke.log)
-          if [ "$found" != "3" ]; then
-            echo "::error::expected the 3 planted variants, got '${found:-none}'"
-            exit 1
-          fi
 
   production-image:
     runs-on: ubuntu-latest

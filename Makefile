@@ -61,6 +61,15 @@ DEV_QUIET := $(COMPOSE) run --rm --no-deps -T dev
 # a new entry in the build context.
 BASETEMP := --basetemp=$(CURDIR)/runs/.pytest-tmp
 
+# pytest calls mkdir() on the basetemp -- not mkdir(parents=True) -- so it
+# needs runs/ to already exist. runs/ is git-ignored, so it does on any machine
+# that has run the suite before and does NOT on a fresh clone: CI failed with
+# 107 errors of "FileNotFoundError: .../runs/.pytest-tmp" while every
+# developer's checkout stayed green. An order-only prerequisite, so a rebuilt
+# directory never re-triggers the targets that depend on it.
+$(CURDIR)/runs:
+	@mkdir -p $@
+
 .PHONY: help dev-image images-build images-push images-lock images-pull images-list \
         test test-fast check shell fixtures smoke clean params
 
@@ -108,7 +117,7 @@ images-pull:   ## Pull every image at its locked digest (SCOPE= for just one)
 images-list:   ## The whole image catalogue: every scope, every key, who uses it
 	$(DEV) python tools/images.py list $(if $(SCOPE),--scope $(SCOPE),)
 
-test:          ## Full suite, including container-backed runner tests
+test: | $(CURDIR)/runs  ## Full suite, including container-backed runner tests
 	docker pull bash:5.2
 	$(DEV) python -m pytest tests/ -v $(BASETEMP)
 

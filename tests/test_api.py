@@ -389,18 +389,23 @@ def test_health_probes_storage_and_schema(client):
 def test_health_stays_200_when_storage_is_unreachable(client, monkeypatch):
     """Taking every instance out of rotation because a dependency blipped turns
     a degradation into an outage. The body says which it is."""
-    import app.main
+    import app.probe
 
-    monkeypatch.setattr(app.main, "_storage_probe", None)
-    monkeypatch.setattr(app.main, "get_store",
+    app.probe.reset()
+    monkeypatch.setattr(app.probe, "get_store",
                         lambda: (_ for _ in ()).throw(RuntimeError("no credentials")))
 
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["storage"]["reachable"] is False
-    assert "no credentials" in response.json()["storage"]["error"]
+    # The TYPE, not the message. RuntimeError vs NoCredentialsError vs
+    # EndpointConnectionError already separates the failure modes, and the
+    # message would carry the bucket and key to an unauthenticated caller.
+    # GET /v1/system has the full text, behind the credential.
+    assert response.json()["storage"]["error"] == "RuntimeError"
+    assert "no credentials" not in str(response.json())
 
-    monkeypatch.setattr(app.main, "_storage_probe", None)
+    app.probe.reset()
 
 
 def test_health_needs_no_credential(client):
