@@ -148,3 +148,36 @@ def test_half_a_credential_is_a_startup_error(monkeypatch, present, missing):
     env = {present: "value", missing: ""}
     with pytest.raises(RuntimeError, match="must be set together"):
         _reload(monkeypatch, API_KEYS="d:sk", ALLOW_UNAUTHENTICATED=None, **env)
+
+
+# --------------------------------------------------------------------------
+# .env isolation
+# --------------------------------------------------------------------------
+
+def test_a_deployment_dotenv_cannot_reach_the_test_suite(monkeypatch, tmp_path):
+    """A .env in the working tree must not decide whether the suite passes.
+
+    Regression: config.py called load_dotenv() unconditionally, which reads the
+    FILE off the bind-mounted checkout -- so withholding `env_file: .env` from
+    the dev service in docker-compose.yml did nothing. Creating a .env to
+    deploy with broke 20 tests on a machine where no source had changed.
+
+    conftest.py's setdefault list could not have caught it: it is an allowlist
+    that has to know every setting in advance, and the variable responsible was
+    one it had never heard of.
+    """
+    (tmp_path / ".env").write_text(
+        "S3_PREFIX=leaked-from-dotenv\n"
+        "REQUIRE_PINNED_IMAGES=true\n"
+        "STORAGE_BACKEND=s3\n"
+        "S3_BUCKET=someone-elses-bucket\n"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    config = _reload(monkeypatch, API_KEYS="d:sk", S3_PREFIX=None,
+                     DHARINI_IGNORE_DOTENV="1")
+
+    assert config.S3_PREFIX == ""
+    assert config.S3_ALLOWED_PREFIX == "uploads/"
+    assert config.S3_BUCKET != "someone-elses-bucket"
+    assert config.REQUIRE_PINNED_IMAGES is False

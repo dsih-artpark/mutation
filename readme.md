@@ -586,20 +586,23 @@ BUCKET=dsih-artpark-04-staging-data
 PREFIX=SDS004-ES_App_Data
 REGION=ap-south-1             # same region as the instance
 
-# Only if the bucket does not already exist.
+# Only if the bucket does not already exist. The staging bucket above is
+# shared with other workloads and predates this service -- in that case skip
+# straight to the policy in step 3, and change nothing about the bucket
+# itself. Its settings are not this deployment's to flip.
 aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
   --create-bucket-configuration LocationConstraint="$REGION"
 
-# Not optional -- see "Bucket versioning" below.
-aws s3api put-bucket-versioning --bucket "$BUCKET" \
-  --versioning-configuration Status=Enabled
-
-# Nothing here is ever public. Results reach users through presigned GETs
-# that Dharini mints.
+# Nothing this service writes is ever public. Results reach users through
+# presigned GETs that Dharini mints.
 aws s3api put-public-access-block --bucket "$BUCKET" \
   --public-access-block-configuration \
   "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
 ```
+
+Versioning and lifecycle rules are deliberately **not** enabled — see
+[Versioning and lifecycle](#versioning-and-lifecycle-both-off-deliberately)
+for why that is safe here and what would change it.
 
 ### 3. How the instance reaches S3
 
@@ -889,29 +892,56 @@ that is executing when you restart the worker is lost and has to be
 resubmitted — `external_id` makes that safe, since a resubmit that reaches a
 still-live run returns the original rather than starting a second one.
 
-### Bucket versioning is not optional
+### Versioning and lifecycle: both off, deliberately
 
-**Turn on versioning.** `PutObject` on an existing key *is* an overwrite, and
-IAM has no way to express "create but never replace" — the policy above
-genuinely permits an artifact-upload retry to clobber a prior version, and
-without versioning that clobber is unrecoverable. Versioning is what makes
-the "cannot destroy anything" claim above actually true, and it's also what
-makes an upload retry safe rather than merely convenient.
+Neither is enabled, and for this write pattern that is a defensible choice
+rather than a deferred chore. Recorded here so the reasoning survives, and so
+the day one of them starts to matter is recognisable.
 
-### Lifecycle rules
+**Why an overwrite is effectively unreachable.** Every artifact key is
+`<prefix>/runs/<run_id>/<filename>`, and `run_id` is a UUID4, so two different
+runs cannot collide. The only paths that write a key twice are an upload retry
+after a partial failure and `POST /v1/runs/{id}/reupload` — and both rewrite
+the *same* bytes. There is no sequence in this service where a `PutObject`
+destroys a result you wanted.
 
-- `uploads/` — expire after **7 days**. An input is consumed within minutes
-  of submission; keeping it around longer serves only resubmission.
-- `runs/` — transition to Glacier Instant Retrieval at **90 days**. The
-  short-term copy already lives on local disk (`RETENTION_HOURS`, see
-  [Storage](#storage) below).
+That is narrower than the general rule. `PutObject` on an existing key *is* an
+overwrite and IAM cannot express "create but never replace", so the policy does
+technically permit a clobber; what makes it safe here is the UUID in the key,
+not the permission. **Two changes would break that assumption:**
 
-**Both rules must carry a noncurrent-version-expiration clause.** Versioning
-plus retry churn otherwise grows storage without bound: every retried
-`PutObject` leaves a noncurrent version behind, and a lifecycle rule that
-only expires the *current* version never reclaims it. Verify this by reading
-the bucket's lifecycle configuration back after applying it — passing the
-happy path proves nothing about the clause being present.
+- writing to a key derived from anything client-supplied — `external_id`, a
+  filename, an owner id — instead of `run_id`;
+- pointing a second deployment (staging *and* production, say) at the same
+  bucket **and** the same `S3_PREFIX`.
+
+Turn versioning on before either. Retrofitting it does not recover anything
+already overwritten.
+
+**Storage grows without bound until something deletes.** No lifecycle rule
+means `uploads/` and `runs/` accumulate forever. Local disk is unaffected —
+`RETENTION_HOURS` (default 6) sweeps `$RUNS_ROOT` regardless, see
+[Storage](#storage) — so this is an S3 bill, not a disk-full outage.
+
+⚠ **Whatever eventually does the deleting, it cannot be this service.** The IAM
+policy grants no `s3:DeleteObject` on purpose, and that is worth keeping: a
+compute host that can erase its own outputs is one bug away from erasing
+someone else's. The three places that work instead:
+
+1. **An S3 lifecycle rule** — no code, no credential, and the reason the
+   original design leaned on it. `uploads/` can expire aggressively (an input
+   is consumed within minutes of submission), `runs/` on whatever retention
+   the science needs.
+2. **Dharini**, which already holds `GetObject` on `runs/*` and knows which
+   results a user has discarded.
+3. **A separate job with its own credential**, if deletion needs logic richer
+   than an age threshold.
+
+If you later add versioning *and* a lifecycle rule, the rule needs a
+**noncurrent-version-expiration** clause — every retried `PutObject` leaves a
+noncurrent version behind, and a rule that expires only the current version
+never reclaims it. Read the configuration back after applying it; the happy
+path passing proves nothing about the clause being present.
 
 ### Database migrations
 
@@ -1089,12 +1119,23 @@ cleaned by a container rather than by you:
 make clean       # removes runs/* and fixtures/ — no sudo
 ```
 
-**No `.env` is needed for local work.** The `dev` container deliberately does
-not read one: the test suite points itself at SQLite in a temporary directory,
-and `make smoke` sets `RUNS_ROOT` and `REFS_ROOT` to paths inside the checkout.
+**No `.env` is needed for local work, and once you have one it is ignored.**
 `.env.example` is for deploying to a server — it points `RUNS_ROOT` at
-`/srv/dharini`, which does not exist on your machine. Copy it when you deploy,
-not when you clone.
+`/srv/dharini` and names a real bucket, prefix and credentials, none of which
+should decide whether your tests pass. Copy it when you deploy, not when you
+clone.
+
+Two things enforce that, and it takes both. `docker-compose.yml` withholds
+`env_file: .env` from the `dev` service — but that only controls the
+container's *environment*, and `app/config.py` calls `load_dotenv()`, which
+reads the *file*, off the bind-mounted checkout. So the dev service also sets
+`DHARINI_IGNORE_DOTENV=1`, which is what actually stops it.
+
+The suite then points itself at SQLite in a temporary directory, `make smoke`
+sets `RUNS_ROOT` and `REFS_ROOT` to paths inside the checkout, and the dev
+container picks `STORAGE_BACKEND=local` with `ALLOW_UNAUTHENTICATED=true` —
+because `app/config.py` otherwise defaults to S3 and refuses to import without
+a bucket and an API key, neither of which local work has.
 
 **The suite never talks to S3.** `tests/conftest.py` sets
 `STORAGE_BACKEND=local`, which makes every test — and `make smoke` — run
@@ -1613,29 +1654,34 @@ not a result.
    old contract fails outright rather than degrading, so this version and the
    corresponding Dharini deploy have to ship together — see G9 in the design
    spec.
-3. **`S3Store` is exercised locally and manually, not in CI.**
+3. **Nothing deletes from S3.** No lifecycle rule, no versioning, and the
+   service holds no `s3:DeleteObject` by design, so `uploads/` and `runs/`
+   grow until something outside this service reclaims them. A cost item, not
+   a correctness one — local disk is swept on `RETENTION_HOURS` regardless.
+   See [Versioning and lifecycle](#versioning-and-lifecycle-both-off-deliberately).
+4. **`S3Store` is exercised locally and manually, not in CI.**
    `tests/test_storage_s3.py` runs against the `minio` dev-profile service and
    is skipped whenever `S3_ENDPOINT_URL` is unset — which is always true in
    CI today, since no `minio` service is wired up there. The backend that
    actually handles production traffic is therefore the one with the least
    automated coverage; a real multi-GB `ont-lsdv` upload (`keep_alignment:
    true`) on staging is the check that stands in for it before a deploy.
-4. **No real LSDV primer scheme exists in this repository.** Primer trimming is
+5. **No real LSDV primer scheme exists in this repository.** Primer trimming is
    implemented and verified against a *synthesised* scheme, and a scheme whose
    contigs do not match the reference is now rejected outright. But no run has
    ever used a genuine LSDV amplicon design, because nobody has supplied one.
    Until then, leave `primer.enabled` false.
-5. **`snippy-fasta` is only ever exercised on amd64.** Its reference-path bug is
+6. **`snippy-fasta` is only ever exercised on amd64.** Its reference-path bug is
    fixed, and CI now runs it end to end and asserts the variant count. But no
    Apple Silicon machine can run it — see the note above — so a developer on a
    Mac changing that pipeline is relying entirely on CI to tell them whether it
    works.
-6. **Variant calls have only been checked against synthetic reads.** All three
+7. **Variant calls have only been checked against synthetic reads.** All three
    ONT callers report exactly the planted substitutions, which proves the
    invocations, the plumbing and the resource limits. It proves nothing about
    accuracy on real basecalled data — in particular the Medaka model must match
    the basecaller that produced the reads, and a mismatch degrades calls
    silently.
-7. **The worker mounts the Docker socket**, which is root-equivalent access to
+8. **The worker mounts the Docker socket**, which is root-equivalent access to
    the host. Acceptable only because no client input ever reaches a shell — do
    not add a code path that changes that.

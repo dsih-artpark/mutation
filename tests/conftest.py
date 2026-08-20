@@ -11,6 +11,13 @@ import tempfile
 
 import pytest
 
+# BEFORE any `app` import, and before app.config would otherwise call
+# load_dotenv(). A developer's .env exists to deploy with -- it points RUNS_ROOT
+# at /srv/dharini and names a real bucket, prefix and credentials -- and none of
+# that may decide whether the suite passes. Setting it here rather than relying
+# on the compose file means `pytest` run any other way is covered too.
+os.environ["DHARINI_IGNORE_DOTENV"] = "1"
+
 
 def pytest_configure(config):
     config.addinivalue_line(

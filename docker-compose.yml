@@ -100,6 +100,21 @@ services:
       # root inside the container would leave root-owned __pycache__ directories
       # in a developer's checkout on any Linux host.
       PYTHONDONTWRITEBYTECODE: "1"
+      # Withholding `env_file: .env` below is not enough on its own: config.py
+      # calls load_dotenv(), which reads the FILE off the bind-mounted checkout
+      # regardless of this container's environment. This is what actually stops
+      # a developer's deployment .env from reaching `make smoke`, `make params`
+      # and tools/run_local.py.
+      DHARINI_IGNORE_DOTENV: "1"
+      # ...which then means those three have to stand on their own, and they
+      # could not: app.config defaults STORAGE_BACKEND to s3 and refuses to
+      # import without a bucket, and refuses again without API_KEYS. Local work
+      # has neither by design, so `make params` and `make smoke` failed on a
+      # fresh clone and only appeared to work on a machine whose .env was
+      # leaking in. These are the same two choices conftest.py makes for the
+      # suite; the dev container now makes them for everything else.
+      STORAGE_BACKEND: local
+      ALLOW_UNAUTHENTICATED: "true"
       # CI sets this to 1 so that the seven docker-marked tests failing to find a
       # daemon is a failure rather than a skip -- see the docker_required fixture
       # in tests/conftest.py. Empty on a developer's machine, where skipping is

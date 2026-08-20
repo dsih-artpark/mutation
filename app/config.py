@@ -17,7 +17,22 @@ import os
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# The dev container and the test suite must not read a developer's .env.
+#
+# docker-compose.yml already withholds `env_file: .env` from the `dev` service
+# for exactly this reason -- but that only controls the container's environment,
+# and load_dotenv() reads the FILE, off the bind-mounted working tree, so the
+# protection was bypassed the moment anyone created a .env to deploy with.
+#
+# The failure was not subtle once it happened -- 20 tests -- but it was
+# misleading: the suite broke on a machine where no source had changed, and the
+# variable responsible (S3_PREFIX) was one conftest.py had no reason to know
+# about. That is the structural problem here. conftest sets a fixed list of
+# variables with setdefault, which is an allowlist that has to be kept in sync
+# with every setting ever added; anything it has not heard of leaks through.
+# Refusing to read the file at all is the version that does not rot.
+if os.getenv("DHARINI_IGNORE_DOTENV", "").lower() not in ("1", "true", "yes"):
+    load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
