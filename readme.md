@@ -1025,35 +1025,33 @@ Or let CI do it, below.
 
 ### Continuous integration
 
-Three workflows, and the split is by *trigger and privilege*, not by taste.
+Three workflows, and only **one fires per event** — there is no path where the
+suite runs twice.
 
-| Workflow | Runs when | Why it is separate |
+| Workflow | Fires on | Contains |
 | --- | --- | --- |
-| `tests.yml` | PRs, and as `deploy`'s gate | `workflow_call`-able, so the deploy gates on exactly this suite rather than a copy that drifts |
-| `images.yml` | a Dockerfile or manifest changes on `main` | Needs `contents: write` and the Docker Hub secrets. Folding it into `tests.yml` would hand those to every PR run, and rebuild ~9 GB of images on pushes that touched no Dockerfile |
-| `deploy.yml` | pushes to `main`, or dispatch | The only one on the self-hosted runner |
+| `tests.yml` | pull requests; called by `deploy` | `test`, `snippy-fasta`, `production-image` |
+| `images.yml` | called by `deploy`; manual dispatch | build → push → lock → commit |
+| `deploy.yml` | pushes to `main`; manual dispatch | `images` → `test` → `deploy` |
 
-**`tests.yml` has no `push: main` trigger, deliberately.** `deploy.yml` calls it
-on every push to `main`, so a push trigger here ran the entire suite twice per
-merge — two identical sets of jobs, one of which nobody reads.
+**On a PR:** `tests.yml` alone. **On a merge:** `deploy.yml` alone, which calls
+the other two as jobs. Neither `tests.yml` nor `images.yml` has a `push`
+trigger, which is what stops the duplication — previously a merge ran the full
+suite twice, once standalone and once inside the deploy.
 
-There is a fourth file, `snippy-e2e.yml`, which **should not exist**. It was
-split out of `tests.yml` when `snippy-fasta` appeared permanently broken:
-`deploy.yml` gates on `tests.yml`, so a job that could never pass meant no
-deploy could ever run.
+**The chain is ordered, not parallel, and that matters.** Everything downstream
+resolves images through `images.lock.json`: the suite pulls what a manifest
+declares, and the host refuses to start on an unpinned tag
+(`REQUIRE_PINNED_IMAGES`). As two independent push-triggered workflows they
+raced, and the deploy lost — failing on an image the other workflow was still
+building. Now nothing looks for an image before it is published.
 
-That is fixed — see
-[`snippy-fasta` and AVX-512](#snippy-fasta-and-avx-512) — so it belongs back in
-`tests.yml` as a third job, gating deploys like everything else. **The one
-condition: `dsihartpark/dharini-snippy:4.6.0-2` must be published and recorded
-in `images.lock.json` first.** Until then, merging the fold-back would make
-`deploy` wait on an image that `images.yml` is still building in a parallel
-workflow, and lose the race.
-
-Worth noting *why* that job was flaky rather than simply red: hosted runners
-are a mix of Intel and AMD, and it passed whenever it happened to land on a CPU
-with AVX-512. A test whose result depends on which machine picked it up is
-worse than one that fails honestly, and the pin is what makes it deterministic.
+`images.yml` skips itself unless a Dockerfile or manifest changed, **or the
+lock is stale** — meaning a manifest declares a version the lock has no digest
+for, which is exactly what a version bump leaves behind. Most deploys pay
+nothing for the step. It also reports the commit it leaves `main` on, because
+if it refreshed the lock, that commit is the only one whose
+`images.lock.json` matches the manifests.
 
 ### Continuous deployment
 
@@ -2005,15 +2003,15 @@ not a result.
    contigs do not match the reference is now rejected outright. But no run has
    ever used a genuine LSDV amplicon design, because nobody has supplied one.
    Until then, leave `primer.enabled` false.
-6. **`snippy-fasta`'s fix is not yet published.** The AVX-512 crash is
-   diagnosed, fixed by pinning `vcflib=1.0.2` in
-   `shared/docker/snippy/Dockerfile`, and verified end to end — see
-   [`snippy-fasta` and AVX-512](#snippy-fasta-and-avx-512). But the rebuilt
-   image (`4.6.0-2`) reaches Docker Hub only when `images.yml` runs on `main`,
-   and `images.lock.json` holds the `4.6.0-1` digest until then. Until both
-   land, `snippy-fasta` still fails on any host without AVX-512 — the resolver
-   now warns loudly and falls back to the tag rather than silently running the
-   old image.
+6. **`snippy-fasta`'s fix reaches a host only after the next deploy.** The
+   AVX-512 crash is diagnosed, fixed by pinning `vcflib=1.0.2`, and verified
+   end to end — see
+   [`snippy-fasta` and AVX-512](#snippy-fasta-and-avx-512). The rebuilt image
+   (`4.6.0-2`) is published by the `images` job of the next deploy, which also
+   refreshes `images.lock.json`. Until that runs, a deployed host still has
+   `4.6.0-1` and still fails on any CPU without AVX-512 — the resolver warns
+   loudly and falls back to the tag rather than silently running the old
+   image.
 7. **Variant calls have only been checked against synthetic reads.** All three
    ONT callers report exactly the planted substitutions, which proves the
    invocations, the plumbing and the resource limits. It proves nothing about
