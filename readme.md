@@ -775,11 +775,19 @@ and publish no host ports; only `api` maps `8000:8000`.
 
 ```bash
 curl -fsSL https://get.docker.com | sudo sh      # engine + compose v2
+sudo apt-get install -y make git                 # not on a minimal cloud image
 sudo usermod -aG docker $USER && newgrp docker
 sudo systemctl enable --now docker               # survives reboot
 
 sudo mkdir -p /srv/dharini/runs /srv/dharini/references
 sudo chown -R $USER /srv/dharini
+```
+
+`make` is only used for the `images-*` targets, which run inside this repo's
+own dev container. If you would rather not install it, `make images-pull` is:
+
+```bash
+docker compose run --rm --build --no-deps dev python tools/images.py pull
 ```
 
 Every service sets `restart: unless-stopped`, so enabling the Docker service is
