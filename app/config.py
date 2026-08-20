@@ -176,18 +176,17 @@ if STORAGE_BACKEND == "s3" and not S3_BUCKET:
     raise RuntimeError("STORAGE_BACKEND=s3 requires S3_BUCKET to be set.")
 
 
-def _prefix(name: str, default: str) -> str:
-    """Normalise a key prefix to end with '/'.
-
-    Without the trailing slash, a `startswith` check on 'uploads' also accepts
-    'uploadsX/anything' -- which is a different, attacker-chosen namespace.
-    """
-    value = os.getenv(name, default).strip().lstrip("/")
-    return value if value.endswith("/") else value + "/"
-
-
-S3_ALLOWED_PREFIX = _prefix("S3_ALLOWED_PREFIX", "uploads/")
-S3_OUTPUT_PREFIX = _prefix("S3_OUTPUT_PREFIX", "runs/")
+# Not configurable, deliberately. These two prefixes are written into the
+# instance role's IAM policy -- GetObject on uploads/*, PutObject on runs/* --
+# so changing one here without changing the policy produces AccessDenied on
+# every run and nothing in the error says why. They are part of the deployment
+# contract, not a per-environment knob.
+#
+# The trailing slash is load-bearing: `key.startswith("uploads")` would also
+# accept "uploadsX/anything", which is a different namespace chosen by whoever
+# supplied the key.
+S3_ALLOWED_PREFIX = "uploads/"
+S3_OUTPUT_PREFIX = "runs/"
 
 S3_SSE = os.getenv("S3_SSE", "AES256").strip()
 S3_KMS_KEY_ID = os.getenv("S3_KMS_KEY_ID", "").strip()
@@ -198,9 +197,9 @@ LOCAL_STORAGE_ROOT = Path(
     os.getenv("LOCAL_STORAGE_ROOT", str(RUNS_ROOT / "_objects"))
 ).resolve()
 
-# Replaces MAX_UPLOAD_SIZE. The service no longer accepts an upload; this is
+# The ceiling on an object this service is willing to fetch. It no longer
 # the ceiling on an object it is willing to fetch.
-MAX_INPUT_BYTES = int(os.getenv("MAX_INPUT_BYTES", os.getenv("MAX_UPLOAD_SIZE", str(5 * 1024**3))))
+MAX_INPUT_BYTES = int(os.getenv("MAX_INPUT_BYTES", str(5 * 1024**3)))
 
 S3_UPLOAD_MAX_ATTEMPTS = int(os.getenv("S3_UPLOAD_MAX_ATTEMPTS", "6"))
 

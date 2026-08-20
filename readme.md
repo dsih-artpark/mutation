@@ -268,7 +268,7 @@ Two things worth knowing:
   client's timeout-and-retry safe, and it is also how the eventual webhook
   can be correlated if the `202` itself was lost.
 - **Every input key is validated before anything is queued**: well-formed,
-  under `S3_ALLOWED_PREFIX`, an accepted extension, and confirmed with a
+  under the `uploads/` prefix, an accepted extension, and confirmed with a
   `HeadObject` call to actually exist and sit within `MAX_INPUT_BYTES` — all
   in milliseconds. A typo'd key is a `422` immediately, not a run that
   queues, waits behind three others, and dies twenty minutes later.

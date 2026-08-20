@@ -51,12 +51,21 @@ def test_local_backend_needs_no_bucket(monkeypatch):
     assert config.STORAGE_BACKEND == "local"
 
 
-def test_prefixes_are_normalised_to_end_with_a_slash(monkeypatch):
-    # A prefix without a trailing slash makes "uploads" match "uploadsX/evil".
-    config = _reload(monkeypatch, S3_ALLOWED_PREFIX="uploads",
-                     S3_OUTPUT_PREFIX="runs", API_KEYS="d:sk")
+def test_prefixes_are_constants_not_configuration(monkeypatch):
+    """They are mirrored in the instance role's IAM policy, so changing one
+    without changing the policy is AccessDenied on every run with nothing in
+    the error to explain it. The env must not be able to move them."""
+    config = _reload(monkeypatch, S3_ALLOWED_PREFIX="somewhere-else",
+                     S3_OUTPUT_PREFIX="elsewhere", API_KEYS="d:sk")
     assert config.S3_ALLOWED_PREFIX == "uploads/"
     assert config.S3_OUTPUT_PREFIX == "runs/"
+
+
+def test_prefixes_end_with_a_slash(monkeypatch):
+    """Load-bearing: startswith("uploads") would also accept "uploadsX/evil"."""
+    config = _reload(monkeypatch, API_KEYS="d:sk")
+    assert config.S3_ALLOWED_PREFIX.endswith("/")
+    assert config.S3_OUTPUT_PREFIX.endswith("/")
 
 
 def test_kms_sse_requires_a_key_id(monkeypatch):
