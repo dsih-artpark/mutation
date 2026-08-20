@@ -5,8 +5,8 @@
       "repository": "dsihartpark/dharini-align-trim",
       "version": "1.0.0",
       "platform": "linux/amd64",
-      "digest": "sha256:348283c730f93ba3cce190c18b13663c24d68628b3a990ad6cb313fd0301c2ac",
-      "ref": "dsihartpark/dharini-align-trim@sha256:348283c730f93ba3cce190c18b13663c24d68628b3a990ad6cb313fd0301c2ac"
+      "digest": "sha256:7beb3cdacc8751c07c3b050e6854f3daeb235e892eb2a120c5461c3bc36b7cbc",
+      "ref": "dsihartpark/dharini-align-trim@sha256:7beb3cdacc8751c07c3b050e6854f3daeb235e892eb2a120c5461c3bc36b7cbc"
     },
     "ont-lsdv:clair3": {
       "repository": "hkubal/clair3",
@@ -19,8 +19,8 @@
       "repository": "dsihartpark/dharini-ont-core",
       "version": "1.0.0",
       "platform": "linux/amd64",
-      "digest": "sha256:314f8675386363d911f7eab1aef6e1b3084fbf159de227061218f11140034f6e",
-      "ref": "dsihartpark/dharini-ont-core@sha256:314f8675386363d911f7eab1aef6e1b3084fbf159de227061218f11140034f6e"
+      "digest": "sha256:54e83d4232cfc698633fb79a6b058822db146310df7a26715413702b8906de0f",
+      "ref": "dsihartpark/dharini-ont-core@sha256:54e83d4232cfc698633fb79a6b058822db146310df7a26715413702b8906de0f"
     },
     "ont-lsdv:medaka": {
       "repository": "quay.io/biocontainers/medaka",
@@ -31,17 +31,17 @@
     },
     "shared:snippy": {
       "repository": "dsihartpark/dharini-snippy",
-      "version": "4.6.0-1",
+      "version": "4.6.0-2",
       "platform": "linux/amd64",
-      "digest": "sha256:57dd28923cd27f1b38b07a168f18c4a57ebafd44286620571aee2943a897ca4c",
-      "ref": "dsihartpark/dharini-snippy@sha256:57dd28923cd27f1b38b07a168f18c4a57ebafd44286620571aee2943a897ca4c"
+      "digest": "sha256:b3188d1497de51ebd8eb330e642b68b7d12b2ae931c95680fa1e4803f9f469eb",
+      "ref": "dsihartpark/dharini-snippy@sha256:b3188d1497de51ebd8eb330e642b68b7d12b2ae931c95680fa1e4803f9f469eb"
     },
     "shared:snpeff-lsdv": {
       "repository": "dsihartpark/dharini-snpeff",
       "version": "5.4-lsdv-1",
       "platform": "linux/amd64",
-      "digest": "sha256:68029a2b252b7f2db070c6282fa84184360b050487093fbd5beaf29ffbbf77aa",
-      "ref": "dsihartpark/dharini-snpeff@sha256:68029a2b252b7f2db070c6282fa84184360b050487093fbd5beaf29ffbbf77aa"
+      "digest": "sha256:e5dd0e8d11ee795f8288dc3feeadc87519b08ce0e28dc0d26cb4f3a962ae967b",
+      "ref": "dsihartpark/dharini-snpeff@sha256:e5dd0e8d11ee795f8288dc3feeadc87519b08ce0e28dc0d26cb4f3a962ae967b"
     }
   }
 }
