@@ -1,20 +1,17 @@
 # snippy-fasta, end to end, on a hosted amd64 runner.
 #
-# Its own workflow rather than a job in tests.yml, and DELIBERATELY NOT part of
-# the deploy gate. deploy.yml calls tests.yml, and this pipeline has never once
-# passed here -- so gating on it would mean no deploy could ever run. The other
-# pipeline, ont-lsdv, is verified end to end and is what the service actually
-# runs today.
+# TEMPORARY FILE. This belongs in tests.yml as a third job, and should be moved
+# back there -- see "Continuous integration" in readme.md for the one condition
+# that has to be true first.
 #
-# That is a statement about where the defect is, not permission to ignore it:
-# this still runs on every push and every PR, and it is still red. See "Known
-# gaps" in readme.md.
-#
-# No developer machine can run this at all. The image is linux/amd64 and the
-# vcflib binaries in it use instructions Apple Silicon's x86 emulation does not
-# implement, so snippy dies with SIGILL partway through. A native arm64 image
-# is not buildable either: snippy 4.6.0 pins vcflib <=1.0.2 and tabixpp 1.1.0,
-# and bioconda publishes no linux-aarch64 build of either.
+# It was split out when the pipeline appeared permanently broken: deploy.yml
+# calls tests.yml, so gating deploys on a job that could not pass meant no
+# deploy could ever run. The cause turned out to be an unpinned vcflib
+# resolving to an AVX-512 build (readme: "snippy-fasta and AVX-512"), which
+# also explains why this job was FLAKY rather than simply red -- hosted runners
+# are a mix of Intel and AMD, and it passed whenever it happened to land on a
+# CPU with AVX-512. With vcflib pinned it is deterministic, and deserves to
+# gate deploys again.
 
 name: snippy-e2e
 

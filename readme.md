@@ -1023,6 +1023,38 @@ returns the original rather than starting a second one.
 
 Or let CI do it, below.
 
+### Continuous integration
+
+Three workflows, and the split is by *trigger and privilege*, not by taste.
+
+| Workflow | Runs when | Why it is separate |
+| --- | --- | --- |
+| `tests.yml` | PRs, and as `deploy`'s gate | `workflow_call`-able, so the deploy gates on exactly this suite rather than a copy that drifts |
+| `images.yml` | a Dockerfile or manifest changes on `main` | Needs `contents: write` and the Docker Hub secrets. Folding it into `tests.yml` would hand those to every PR run, and rebuild ~9 GB of images on pushes that touched no Dockerfile |
+| `deploy.yml` | pushes to `main`, or dispatch | The only one on the self-hosted runner |
+
+**`tests.yml` has no `push: main` trigger, deliberately.** `deploy.yml` calls it
+on every push to `main`, so a push trigger here ran the entire suite twice per
+merge — two identical sets of jobs, one of which nobody reads.
+
+There is a fourth file, `snippy-e2e.yml`, which **should not exist**. It was
+split out of `tests.yml` when `snippy-fasta` appeared permanently broken:
+`deploy.yml` gates on `tests.yml`, so a job that could never pass meant no
+deploy could ever run.
+
+That is fixed — see
+[`snippy-fasta` and AVX-512](#snippy-fasta-and-avx-512) — so it belongs back in
+`tests.yml` as a third job, gating deploys like everything else. **The one
+condition: `dsihartpark/dharini-snippy:4.6.0-2` must be published and recorded
+in `images.lock.json` first.** Until then, merging the fold-back would make
+`deploy` wait on an image that `images.yml` is still building in a parallel
+workflow, and lose the race.
+
+Worth noting *why* that job was flaky rather than simply red: hosted runners
+are a mix of Intel and AMD, and it passed whenever it happened to land on a CPU
+with AVX-512. A test whose result depends on which machine picked it up is
+worse than one that fails honestly, and the pin is what makes it deterministic.
+
 ### Continuous deployment
 
 `.github/workflows/deploy.yml` runs the full suite, then deploys to this host
