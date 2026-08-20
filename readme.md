@@ -584,16 +584,35 @@ Same-region S3 transfer is free, so the bill is essentially instance + volume.
 
 **≈ $90/month** for `m6a.xlarge` + 100 GB.
 
-**Why `m6a` and not `m6i`.** Identical on paper — 4 vCPU, 16 GiB, x86_64 — and
-in `ap-south-1` the AMD variant is **45% cheaper**, which is a far wider gap
-than the usual ~10% and worth taking. Every tool image is `linux/amd64`; AMD
-EPYC runs that natively, so there is no compatibility question, only a price
-one.
+**Why `m6a` and not `m6i`.** They differ in exactly one thing. Same 4 vCPU,
+same 16 GiB, same *up to* 12.5 Gbps network and 10 Gbps EBS — only the CPU
+differs: AMD EPYC (Milan) against Intel Xeon 8375C (Ice Lake). Both are
+x86_64, every tool image is `linux/amd64`, and AMD runs it natively. Nothing
+like the Graviton problem.
 
-The one honest caveat: Intel's AVX-512 can help CPU inference, which is what
-Medaka and Clair3 do. If a variant-calling stage turns out to be the bottleneck
-and you have measurements showing it, `m6i.xlarge` is the A/B test. Do not pay
-45% up front for a difference nobody has observed on this workload.
+The one real architectural difference is **AVX-512**, which Ice Lake has and
+Milan does not. So the question is only ever: does anything in these pipelines
+use it? Measured, rather than assumed — counting AVX-512 kernel symbols in the
+shipped binaries:
+
+| Stage | Runtime | AVX-512 kernels shipped? |
+| --- | --- | --- |
+| **`clair3`** — the **default** caller | TensorFlow 2.8 | **No** — 2 hits in a 317 MB kernel library, i.e. feature-detection strings, not code |
+| `medaka` — opt-in | PyTorch 2.3.1 | **Yes** — 3390 symbols in `libtorch_cpu.so` |
+| `bcftools` — opt-in | C / htslib | No |
+| minimap2, samtools, fastp, snpEff | SSE/AVX2, Java | No |
+
+The stock TensorFlow build targets an AVX2 baseline — it is the same build
+that prints *"rebuild TensorFlow with the appropriate compiler flags"* about
+AVX-512 on startup. **So on the default configuration, Intel's one advantage
+is unreachable and `m6i` buys nothing for 82% more money.**
+
+Only `variant.tool=medaka` could be slower on AMD, and even there PyTorch's
+AVX-512 path is typically 1.2–1.5× on AVX2, partly offset by the clock
+throttling AVX-512 causes on Ice Lake. If you switch to Medaka and it becomes
+your bottleneck, `m6i.xlarge` is the A/B test — and switching is a stop, a
+change of instance type and a start, with the volume and all data intact. Do
+not pay for it in advance.
 
 **Why 4 vCPU / 16 GiB.** The heaviest stages declare `cpus=4, memory_gb=8`
 (Medaka and Clair3; `align` is 4/6) and `WORKER_CONCURRENCY=1`, so exactly one
