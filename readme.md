@@ -998,6 +998,8 @@ If that times out from Dharini but works locally, it is the security group.
 
 ### Updating a running deployment
 
+By hand:
+
 ```bash
 cd /srv/dharini/app && git pull
 docker compose up -d --build     # migrations run at API startup
@@ -1005,9 +1007,100 @@ make images-pull                 # only if images.lock.json changed
 ```
 
 Rebuilding does not touch `/srv/dharini/runs` or the Postgres volume. A run
-that is executing when you restart the worker is lost and has to be
-resubmitted — `external_id` makes that safe, since a resubmit that reaches a
-still-live run returns the original rather than starting a second one.
+executing when you restart the worker is lost and has to be resubmitted —
+`external_id` makes that safe, since a resubmit reaching a still-live run
+returns the original rather than starting a second one.
+
+Or let CI do it, below.
+
+### Continuous deployment
+
+`.github/workflows/deploy.yml` runs the full suite, then deploys to this host
+from a **self-hosted runner installed on the host itself**.
+
+**Why a self-hosted runner and not SSH from a hosted one.** The runner polls
+GitHub outbound, so port 22 need not be open to the internet at all, and no
+long-lived SSH private key sits in GitHub secrets. Those are exactly the two
+things the SSH approach would have required.
+
+> ### ⚠ Two conditions this depends on
+>
+> **The repository must stay private.** A self-hosted runner on a public
+> repository executes code from fork pull requests on your server. The
+> workflow never triggers on `pull_request` for that reason, but the
+> repository setting is the control that actually matters.
+>
+> **Anyone who can push to `main` can run commands as a user in the `docker`
+> group**, which is root-equivalent on this host. Branch protection on `main`
+> is what keeps that list to the people you intend.
+
+#### Installing the runner
+
+On the EC2 host, as the same user that owns `/srv/dharini/app` — it inherits
+that user's deploy key, which is what lets the deploy step fetch:
+
+```bash
+mkdir -p ~/actions-runner && cd ~/actions-runner
+curl -o runner.tar.gz -L \
+  https://github.com/actions/runner/releases/latest/download/actions-runner-linux-x64.tar.gz
+tar xzf runner.tar.gz
+```
+
+Then get a registration token from **Settings → Actions → Runners → New
+self-hosted runner** on the repository, and:
+
+```bash
+./config.sh --url https://github.com/<owner>/<repo> --token <TOKEN> \
+            --name dharini-ec2 --labels dharini --unattended
+
+sudo ./svc.sh install $USER      # run as this user, not root
+sudo ./svc.sh start
+sudo ./svc.sh status
+```
+
+The **`dharini` label is load-bearing** — the workflow targets
+`runs-on: [self-hosted, dharini]`, so a runner without it is never selected
+and the job queues forever. `jq` and `make` must be installed; they are in the
+[host setup](#5-host-setup) step above.
+
+#### What a deploy does
+
+1. Runs the whole of `tests.yml`, including the `snippy-fasta` end-to-end run
+   that no developer machine can execute. Slow, and the right thing to be slow
+   about.
+2. Records the currently deployed SHA, for rollback.
+3. Fetches and checks out the target — resolved through `origin/` first,
+   because `git checkout main` on a host that has fetched but never merged
+   checks out the *local* `main` and reports a successful deploy that changed
+   nothing.
+4. Pulls tool images only if `images.lock.json` moved. Digests are pinned, so
+   a new image reaches the host only when pulled — and most deploys skip the
+   ~9 GB.
+5. `docker compose up -d --build`, then polls `/health` for up to five
+   minutes, requiring `status: ok`, `storage.reachable: true` and a non-null
+   `schema_revision`.
+6. **On any failure, restores the previous SHA and rebuilds.**
+
+`concurrency: deploy-production` with `cancel-in-progress: false` means never
+two deploys at once and never a cancelled one — a job killed between
+`git checkout` and `docker compose up` leaves the host on code no commit
+describes.
+
+> **Rollback restores the code, not the schema.** `init_db()` runs
+> `alembic upgrade head` at API startup and there is no automatic downgrade, so
+> a deploy that migrated and *then* failed leaves the schema ahead of the
+> restored code. The workflow says so in its output rather than implying a
+> clean revert. Compare `schema_revision` on `/health` against what the
+> restored code expects, and decide deliberately.
+
+#### Deploying
+
+Merging to `main` deploys. To deploy something else, use **Actions → deploy →
+Run workflow** and pick the branch — leave the `ref` input empty and it
+deploys the branch you dispatched from, which is also the branch the tests ran
+against. Filling it in with a different ref means testing one thing and
+deploying another, which is occasionally what you want and never what you want
+by accident.
 
 ### Versioning and lifecycle: both off, deliberately
 

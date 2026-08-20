@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Callable so deploy.yml gates on exactly this suite rather than a copy of
+  # it. A duplicated gate drifts, and the copy that drifts is the one guarding
+  # production.
+  workflow_call:
 
 jobs:
   test:
