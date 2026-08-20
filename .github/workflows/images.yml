@@ -24,6 +24,19 @@ jobs:
 
       - run: pip install PyYAML==6.0.2
 
+      # docker/login-action with empty inputs does not fail -- it skips, and the
+      # job then dies three steps later at `docker push` with
+      # "insufficient_scope: authorization failed", which reads like a Docker
+      # Hub permissions problem rather than an unset secret.
+      - name: Check the registry credentials exist
+        run: |
+          if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ] || [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "::error::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are not set on this repository."
+            echo "Settings -> Secrets and variables -> Actions. The token is a Docker Hub"
+            echo "personal access token with Read & Write scope, not an account password."
+            exit 1
+          fi
+
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}

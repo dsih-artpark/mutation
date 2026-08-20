@@ -1031,8 +1031,15 @@ things the SSH approach would have required.
 > repository setting is the control that actually matters.
 >
 > **Anyone who can push to `main` can run commands as a user in the `docker`
-> group**, which is root-equivalent on this host. Branch protection on `main`
-> is what keeps that list to the people you intend.
+> group**, which is root-equivalent on this host.
+>
+> Branch protection would normally fence that, but **it is unavailable on a
+> private repository on GitHub Free** — both classic protection and rulesets
+> return `403 Upgrade to GitHub Pro`. So on this plan the control is simply
+> the push-access list. That is defensible for a single maintainer, and stops
+> being defensible the moment a collaborator is added or this stops being
+> staging. Keep 2FA on the account that holds push access, and revisit before
+> either of those changes.
 
 #### Installing the runner
 

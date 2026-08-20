@@ -56,6 +56,18 @@ jobs:
         id: current
         run: |
           cd "$APP_DIR"
+
+          # A tracked file edited in place on the box makes `git checkout`
+          # refuse, which would fail the deploy AND the rollback -- both are a
+          # checkout -- leaving the host mid-deploy. Fail here instead, while
+          # nothing has moved, and say what to do about it.
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "::error::$APP_DIR has uncommitted changes to tracked files."
+            git status --short --untracked-files=no
+            echo "Commit them, or discard with: git -C $APP_DIR checkout -- ."
+            exit 1
+          fi
+
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "lock=$(git hash-object images.lock.json)" >> "$GITHUB_OUTPUT"
           echo "Currently deployed: $(git rev-parse --short HEAD)"
