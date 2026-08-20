@@ -114,13 +114,38 @@ def test_local_store_refuses_to_escape_its_root(store, tmp_path):
 
 
 def test_only_storage_imports_boto3():
-    """boto3 must not leak into the API, the worker or a pipeline."""
+    """boto3 must not leak into the API, the worker or a pipeline.
+
+    Parsed rather than grepped. A substring scan also fires on the word
+    appearing in a comment or docstring -- which is prose about the seam, not a
+    breach of it -- and the resulting false failure teaches people to stop
+    explaining the seam rather than to stop crossing it.
+
+    This is the stronger check of the two on the thing that matters: it catches
+    a real reference anywhere in the module, including a lazy `import boto3`
+    inside a function body, which is exactly how S3Store does it.
+    """
+    import ast
     import pathlib
 
+    banned = {"boto3", "botocore"}
     root = pathlib.Path(__file__).resolve().parents[1] / "app"
-    offenders = [
-        path.relative_to(root).as_posix()
-        for path in root.rglob("*.py")
-        if path.name != "storage.py" and "boto3" in path.read_text()
-    ]
+    offenders = []
+
+    for path in sorted(root.rglob("*.py")):
+        if path.name == "storage.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                hit = any(a.name.split(".")[0] in banned for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                hit = bool(node.module) and node.module.split(".")[0] in banned
+            elif isinstance(node, ast.Name):
+                hit = node.id in banned
+            else:
+                continue
+            if hit:
+                offenders.append(f"{path.relative_to(root).as_posix()}:{node.lineno}")
+                break
+
     assert offenders == []

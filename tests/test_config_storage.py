@@ -83,3 +83,40 @@ def test_cors_origins_split_and_strip(monkeypatch):
 def test_retention_defaults_to_six_hours(monkeypatch):
     config = _reload(monkeypatch, RETENTION_HOURS=None, API_KEYS="d:sk")
     assert config.RETENTION_HOURS == 6
+
+
+# --------------------------------------------------------------------------
+# AWS credentials
+# --------------------------------------------------------------------------
+
+def test_both_credentials_set_are_read_through(monkeypatch):
+    config = _reload(
+        monkeypatch, API_KEYS="d:sk", ALLOW_UNAUTHENTICATED=None,
+        AWS_ACCESS_KEY_ID="AKIAEXAMPLE", AWS_SECRET_ACCESS_KEY="s3cr3t",
+    )
+    assert config.AWS_ACCESS_KEY_ID == "AKIAEXAMPLE"
+    assert config.AWS_SECRET_ACCESS_KEY == "s3cr3t"
+
+
+def test_neither_credential_set_is_the_instance_role_path(monkeypatch):
+    # Empty is not an error: boto3 falls back to its own chain, which on EC2
+    # finds the instance role.
+    config = _reload(
+        monkeypatch, API_KEYS="d:sk", ALLOW_UNAUTHENTICATED=None,
+        AWS_ACCESS_KEY_ID="", AWS_SECRET_ACCESS_KEY="",
+    )
+    assert config.AWS_ACCESS_KEY_ID == ""
+    assert config.AWS_SECRET_ACCESS_KEY == ""
+
+
+@pytest.mark.parametrize("present,missing", [
+    ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+    ("AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID"),
+])
+def test_half_a_credential_is_a_startup_error(monkeypatch, present, missing):
+    # The dangerous state: boto3 ignores a lone key and falls through to the
+    # credential chain, so the process comes up looking configured while
+    # reaching for whatever account the host happens to offer.
+    env = {present: "value", missing: ""}
+    with pytest.raises(RuntimeError, match="must be set together"):
+        _reload(monkeypatch, API_KEYS="d:sk", ALLOW_UNAUTHENTICATED=None, **env)

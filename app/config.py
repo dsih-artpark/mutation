@@ -184,6 +184,32 @@ if STORAGE_BACKEND == "s3" and not S3_BUCKET:
 S3_ALLOWED_PREFIX = "uploads/"
 S3_OUTPUT_PREFIX = "runs/"
 
+# Static credentials. Left empty, boto3 falls back to its own chain -- on EC2
+# that is the instance role, locally it is ~/.aws/credentials or an SSO session.
+# Setting them here is therefore an OVERRIDE, not the only way in, and the same
+# image runs either way: keys in a developer's .env, nothing at all on a host
+# that has a role attached.
+#
+# Standard AWS names on purpose. The `aws` CLI, boto3's own chain and every
+# other SDK read exactly these, so a credential that works in the shell works
+# in the container with nothing translated.
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+# Only for temporary credentials from `sts assume-role` / SSO. A long-lived
+# IAM user key does not have one.
+AWS_SESSION_TOKEN = os.getenv("AWS_SESSION_TOKEN", "").strip()
+
+if bool(AWS_ACCESS_KEY_ID) != bool(AWS_SECRET_ACCESS_KEY):
+    # Half-configured is the worst of the three states: boto3 would silently
+    # ignore the lone value and fall through to the credential chain, so the
+    # process comes up looking configured and reaches whatever account the
+    # host happens to be pointed at -- or nothing.
+    raise RuntimeError(
+        "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set together. "
+        "Set both to use a static credential, or neither to use the instance "
+        "role / ambient AWS config."
+    )
+
 S3_SSE = os.getenv("S3_SSE", "AES256").strip()
 S3_KMS_KEY_ID = os.getenv("S3_KMS_KEY_ID", "").strip()
 if S3_SSE == "aws:kms" and not S3_KMS_KEY_ID:

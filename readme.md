@@ -115,7 +115,7 @@ sudo mkdir -p /srv/dharini/runs /srv/dharini/references
 sudo chown -R $USER /srv/dharini
 cp data/lsdv_reference_sequence.fasta /srv/dharini/references/
 
-cp .env.example .env && $EDITOR .env    # twelve variables, all required
+cp .env.example .env && $EDITOR .env    # fourteen variables, all required
 docker compose up -d --build
 make images-pull                        # ~9 GB, optional but do it now
 curl localhost:8000/health
@@ -125,10 +125,9 @@ A brand-new database needs nothing further — `init_db()` runs
 `alembic upgrade head` at API startup.
 
 **Deploying to AWS: read [Deployment (EC2)](#deployment-ec2) instead.** It has
-the instance and bucket setup, the IAM role the instance needs to reach S3, and
-the one metadata setting that silently breaks credentials inside containers if
-you miss it. There is also a hard constraint on the instance family that is not
-reversible after the fact.
+the instance and bucket setup and the two ways this service can be given S3
+credentials, with the trade-off between them. There is also a hard constraint on
+the instance family that is not reversible after the fact.
 
 ---
 
@@ -588,14 +587,38 @@ aws s3api put-public-access-block --bucket "$BUCKET" \
 
 ### 3. How the instance reaches S3
 
-**Through an IAM role attached to the instance — no keys anywhere.** The EC2
-metadata service hands out short-lived, auto-rotating credentials, and boto3
-finds them by itself through its default credential chain. `S3Store` takes no
-credentials of its own and there is no `AWS_ACCESS_KEY_ID` in `.env.example`
-on purpose: if the process cannot obtain credentials from the role, that is a
-startup failure, not a fallback to something weaker.
+**Two ways, and the code takes either.** `.env` credentials if you set them,
+boto3's own credential chain if you leave them empty. Same image, same
+`app/storage.py`, no build-time switch.
 
-**a. The policy.** Save as `policy.json`, substituting your bucket:
+| | `.env` credentials | Instance role |
+| --- | --- | --- |
+| Setup | paste two values | policy + role + instance profile + hop limit |
+| Works locally | **yes**, identically | no — needs a role to assume |
+| Rotation | manual | automatic, hourly |
+| If leaked | valid from anywhere until revoked | bound to the instance |
+
+**Start with `.env` credentials.** The setup is two lines, local development
+against real S3 becomes trivial, and — this is the part that actually matters —
+**the blast radius is set by the policy, not by where the credential lives.**
+The policy below grants `GetObject` on `uploads/*` and `PutObject` on `runs/*`
+in one bucket. A leak of that is a handful of object reads by exact key, with
+no ability to list the bucket, read back results, or delete anything.
+
+> The mistake to avoid is not the static key. It is widening the policy to
+> `s3:*` because a user credential made it easy to. Keep it exactly as narrow
+> as the role version below and the difference between the two shrinks to
+> rotation.
+
+Move to an instance role later if you want the rotation, or sooner if this
+bucket ever holds anything you would not want read. Nothing in the code has to
+change — empty the two variables and restart.
+
+#### a. The policy
+
+Save as `policy.json`, substituting your bucket. **This is the same policy
+either way** — attach it to an IAM user for the `.env` path, or to a role for
+the instance-profile path:
 
 ```json
 {
@@ -614,18 +637,48 @@ startup failure, not a fallback to something weaker.
 ```
 
 That is the **whole** policy — no `s3:ListBucket`, no `s3:DeleteObject`, no
-`s3:GetObject` on `runs/*`, no wildcards. This host can read the one object it
-was told about, by exact key, and create objects under a run-scoped prefix. It
-cannot enumerate the bucket, cannot read back another run's results, and cannot
-destroy anything. A compromise of this service is one object read, not the
-bucket.
+`s3:GetObject` on `runs/*`, no wildcards. This service can read the one object
+it was told about, by exact key, and create objects under a run-scoped prefix.
+It cannot enumerate the bucket, cannot read back another run's results, and
+cannot destroy anything.
 
-**b. Create the role and attach the policy:**
+#### b. Option 1 — credentials in `.env` (start here)
 
 ```bash
 aws iam create-policy --policy-name dharini-pipeline-s3 \
-  --policy-document file://policy.json          # note the returned ARN
+  --policy-document file://policy.json           # note the returned ARN
 
+# No console access, no other policy, no group.
+aws iam create-user --user-name dharini-pipeline
+aws iam attach-user-policy --user-name dharini-pipeline \
+  --policy-arn arn:aws:iam::<account-id>:policy/dharini-pipeline-s3
+
+aws iam create-access-key --user-name dharini-pipeline
+```
+
+The secret is shown **once**. Put both values straight into `.env`:
+
+```bash
+AWS_ACCESS_KEY_ID=AKIA…
+AWS_SECRET_ACCESS_KEY=…
+```
+
+Set **both or neither**. One alone is refused at startup, because boto3 ignores
+a lone `aws_access_key_id` and falls through to its chain — the process would
+come up looking configured while reaching for whatever else the host offers.
+
+`.env` is in `.gitignore` and must stay there. The realistic leak path is not
+the server, it is a screenshot, a Slack paste or a copied file — so treat these
+like a password, and rotate on anyone's offboarding
+(`aws iam create-access-key`, deploy, then delete the old one).
+
+#### c. Option 2 — an instance role (no keys at all)
+
+Leave `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` empty and attach a role.
+The metadata service then hands boto3 short-lived, auto-rotating credentials
+through its default chain.
+
+```bash
 aws iam create-role --role-name dharini-pipeline \
   --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{
     "Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},
@@ -637,69 +690,72 @@ aws iam attach-role-policy --role-name dharini-pipeline \
 aws iam create-instance-profile --instance-profile-name dharini-pipeline
 aws iam add-role-to-instance-profile \
   --instance-profile-name dharini-pipeline --role-name dharini-pipeline
-```
 
-**c. Attach it to the instance** — in the launch wizard under *Advanced
-details → IAM instance profile*, or afterwards:
-
-```bash
 aws ec2 associate-iam-instance-profile --instance-id i-… \
   --iam-instance-profile Name=dharini-pipeline
 ```
 
-> ### ⚠ d. Raise the metadata hop limit to 2
+> **⚠ Then raise the metadata hop limit to 2:**
 >
 > ```bash
 > aws ec2 modify-instance-metadata-options --instance-id i-… \
 >   --http-tokens required --http-put-response-hop-limit 2
 > ```
 >
-> **This is the step that silently breaks everything if you skip it.** The API
-> and worker run *in containers*, on Docker's bridge network. A packet from
-> inside a container to `169.254.169.254` is NAT'd by the host, which
-> decrements its TTL — and IMDSv2's default response hop limit of **1** drops
-> it. The result: credentials resolve perfectly when you `curl` the metadata
-> endpoint from the EC2 shell, and fail with `NoCredentialsError` inside the
-> container that actually needs them. Everything looks configured and nothing
-> works. (This is the same reason ECS sets the hop limit to 2 for you.)
+> This step is only needed on the role path, and it is the one that silently
+> breaks everything if you skip it. The API and worker run *in containers*, on
+> Docker's bridge network. A packet from inside a container to
+> `169.254.169.254` is NAT'd by the host, which decrements its TTL — and
+> IMDSv2's default response hop limit of **1** drops it. The result:
+> credentials resolve perfectly when you `curl` the metadata endpoint from the
+> EC2 shell, and fail with `NoCredentialsError` inside the container that
+> actually needs them. Everything looks configured and nothing works. (This is
+> the same reason ECS sets the hop limit to 2 for you.)
+>
+> **Avoiding this is a real argument for option 1.**
 
-**e. Verify — from inside the container, not from the host:**
+#### d. Verify — from inside the container, not from the host
 
 ```bash
 curl -s localhost:8000/health | jq .storage
 # { "backend": "s3", "bucket": "dharini-prod", "reachable": true }
 ```
 
-`reachable: true` means this process resolved role credentials and completed a
-real `HeadObject` against your bucket. If it is `false`, the `error` field
-beside it names the exception, and this says which half is wrong:
+`reachable: true` means this process resolved credentials and completed a real
+`HeadObject` against your bucket. If it is `false`, the `error` field beside it
+names the exception, and this says which half is wrong:
 
 ```bash
 docker compose exec api python -c \
   "import botocore.session as s; print(s.get_session().get_credentials().method)"
-# iam-role  → the role is reaching the container. A failure is then the policy.
-# None / traceback → the hop limit, or no instance profile attached.
+# env-var / shared-credentials-file → .env reached the container. Blame the policy.
+# iam-role                          → the role reached the container. Blame the policy.
+# None / traceback                  → no credential at all: a typo in .env, or
+#                                     the hop limit on the role path.
 ```
 
-**f. Add a VPC gateway endpoint for S3.** Optional, and worth doing anyway:
+#### e. Add a VPC gateway endpoint for S3
+
+Optional, and worth doing anyway:
 
 ```bash
 aws ec2 create-vpc-endpoint --vpc-id vpc-… \
   --service-name com.amazonaws.$REGION.s3 --route-table-ids rtb-…
 ```
 
-Gateway endpoints are free and keep S3 traffic off the NAT gateway, which
-bills per GB processed. With multi-GB FASTQs in and BAMs out, that is a real
-line item, and it also means the transfer never traverses the public internet.
+Gateway endpoints are free and keep S3 traffic off the NAT gateway, which bills
+per GB processed. With multi-GB FASTQs in and BAMs out that is a real line item,
+and it also means the transfer never traverses the public internet.
 
-**g. Know what a wrong policy looks like.** Without `s3:ListBucket`, S3 answers
-a HEAD on a key you cannot read with `403 AccessDenied` rather than
-`404 NoSuchKey`, and `app/storage.py` deliberately treats both as absence — that
-conflation is what turns a typo'd key into a clean `422` instead of a `500`. The
-cost is that a **misconfigured policy is indistinguishable from a typo**: if
-every submission comes back `422 … does not exist` for keys you can see in the
-console, check the bucket name and the `uploads/` prefix in the policy before
-you go looking at Dharini.
+#### f. Know what a wrong policy looks like
+
+Without `s3:ListBucket`, S3 answers a HEAD on a key you cannot read with
+`403 AccessDenied` rather than `404 NoSuchKey`, and `app/storage.py`
+deliberately treats both as absence — that conflation is what turns a typo'd key
+into a clean `422` instead of a `500`. The cost is that a **misconfigured
+policy is indistinguishable from a typo**: if every submission comes back
+`422 … does not exist` for keys you can see in the console, check the bucket
+name and the `uploads/` prefix in the policy before you go looking at Dharini.
 
 ### 4. Security group
 
@@ -738,13 +794,14 @@ cp data/lsdv_reference_sequence.fasta /srv/dharini/references/
 cp .env.example .env && ${EDITOR:-nano} .env
 ```
 
-`.env.example` is a checklist, not a catalogue: **twelve variables, all of
+`.env.example` is a checklist, not a catalogue: **fourteen variables, all of
 which must be set.** Anything not in it has a working default in
 `app/config.py`. The ones that need a real value from you:
 
 | Variable | Value |
 | --- | --- |
 | `S3_BUCKET`, `S3_REGION` | from step 2 |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | from step 3b. **Both or neither** — leave both empty on the instance-role path |
 | `DOCKER_GID` | `getent group docker \| cut -d: -f3` |
 | `POSTGRES_PASSWORD` | anything; it never leaves the compose network |
 | `WEBHOOK_SECRET` | `openssl rand -hex 32` — **must match Dharini's copy byte for byte** |
@@ -1020,10 +1077,15 @@ docker compose run --rm --no-deps \
 containers on the same compose network, which is what makes
 `http://minio:9000` resolve inside `dev` but not from your own shell. The
 access key pair matches `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` in
-`docker-compose.yml`; `S3Store` takes no credentials of its own and reads
-them the same way it would read an instance role in production, through
-boto3's own credential chain. Nobody else needs any of this; it's the one
-integration point `LocalStore` cannot stand in for.
+`docker-compose.yml`. Nobody else needs any of this; it's the one integration
+point `LocalStore` cannot stand in for.
+
+You can also point a local checkout at a **real** S3 bucket, which is the other
+thing `.env` credentials buy: put `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+`S3_BUCKET` and `S3_REGION` in a local `.env` and `docker compose up` behaves
+exactly as it does on the server. Use a scratch bucket, not the production one —
+`runs/` is written to, and the policy deliberately cannot delete what it
+writes.
 
 The custom images are already published to
 [`dsihartpark`](https://hub.docker.com/u/dsihartpark) on Docker Hub, so

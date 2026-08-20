@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -290,18 +291,29 @@ class StageRunner:
                     close_fds=True,
                 )
                 try:
-                    return proc.wait(timeout=timeout_s)
+                    code = proc.wait(timeout=timeout_s)
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=30)
                     raise StageTimeout(str(log_path.stem), timeout_s, _tail(log_path))
+
+                # A missing executable does NOT reliably raise FileNotFoundError.
+                # CPython spawns through posix_spawn where it can, and there the
+                # exec failure happens in the child with no errno pipe back --
+                # the parent just sees exit code 127. So the branch below was
+                # dead on this platform, and the operator got a bare "exit code
+                # 127" with a log containing only the command line.
+                #
+                # 127 is ambiguous on its own: `docker run img nosuchtool` also
+                # returns it, from inside the container. shutil.which is what
+                # disambiguates -- if the docker binary itself is not executable,
+                # nothing ran at all and no stage of any run can succeed.
+                if code == 127 and shutil.which(str(cmd[0])) is None:
+                    raise _no_docker(log_path, str(cmd[0]))
+                return code
             except FileNotFoundError as exc:
-                raise StageFailed(
-                    str(log_path.stem), 127,
-                    f"executable not found: {exc}. "
-                    f"Is Docker available to the worker (socket mounted)?",
-                    log_path,
-                ) from exc
+                # Still correct where fork+exec is used instead of posix_spawn.
+                raise _no_docker(log_path, str(cmd[0])) from exc
             finally:
                 if stdout_path:
                     out_target.close()
@@ -309,6 +321,22 @@ class StageRunner:
     def _container_name(self, stage: str) -> str:
         safe = _UNSAFE_NAME.sub("-", stage)[:24]
         return f"dharini-{self.run_id[:8]}-{safe}-{self._counter}"
+
+
+def _no_docker(log_path: Path, binary: str) -> StageFailed:
+    """The worker cannot reach Docker -- which fails every stage of every run.
+
+    Worth its own message because the two ways it happens on a fresh host both
+    look like an application bug from the outside: the socket is not mounted
+    into the worker, or DOCKER_GID does not match the host's docker group so
+    the mounted socket is unreadable.
+    """
+    return StageFailed(
+        log_path.stem, 127,
+        f"cannot execute {binary!r}. Is Docker available to the worker "
+        f"(socket mounted, DOCKER_GID matching the host's docker group)?",
+        log_path,
+    )
 
 
 def _tail(path: Path, limit: int = 4000) -> str:

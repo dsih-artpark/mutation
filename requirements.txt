@@ -11,6 +11,18 @@ plotly==6.7.0
 SQLAlchemy==2.0.36
 psycopg[binary]==3.2.3
 
+# Schema migrations. A RUNTIME dependency, not a tooling one: init_db() runs
+# `alembic upgrade head` in the API's lifespan handler, so the process does not
+# start without it.
+#
+# Missing here, `from alembic import command` does not fail loudly -- the repo's
+# own alembic/ directory has no __init__.py, so Python resolves the name to that
+# NAMESPACE PACKAGE and the import dies with "cannot import name 'command' from
+# alembic (unknown location)". Which reads like a broken install rather than an
+# absent one. An installed alembic is a regular package and wins the lookup, so
+# pinning it here is also what keeps the directory from shadowing it.
+alembic==1.14.0
+
 # Validates submitted params against each pipeline's declared schema, and lets
 # Dharini render its forms from the same schema.
 jsonschema==4.23.0

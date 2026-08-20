@@ -21,8 +21,9 @@ have been deleted from the pipeline service. Both sides must deploy together.
 **The single most important rule: the pipeline service never uploads to S3 on
 the input side and never issues a presigned URL.** Dharini owns all S3 write
 credentials for `uploads/`, and Dharini mints every download link. The pipeline
-service holds an EC2 instance role that can only `GetObject` under `uploads/`
-and `PutObject` under `runs/`. Do not design anything that assumes otherwise.
+service holds a credential that can only `GetObject` under `uploads/` and
+`PutObject` under `runs/` — no `ListBucket`, no `DeleteObject`, no read of
+`runs/*`. Do not design anything that assumes otherwise.
 
 ---
 

@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Protocol
 
 from .config import (
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+    AWS_SESSION_TOKEN,
     LOCAL_STORAGE_ROOT,
     S3_ALLOWED_PREFIX,
     S3_BUCKET,
@@ -224,21 +227,45 @@ class LocalStore:
 # ==========================================================================
 
 class S3Store:
-    """boto3-backed store. Credentials come from the EC2 instance role.
+    """boto3-backed store.
 
-    There is deliberately no access-key configuration: if the process cannot
-    obtain credentials from the role, that is a startup failure, not a fallback
-    to something weaker.
+    Credentials are resolved one of two ways, and the class does not care
+    which:
+
+    - `access_key`/`secret_key` supplied -> used directly. This is the .env
+      path, and it is what makes the same image run against real S3 from a
+      laptop, against MinIO in the dev profile, and on a host with no role.
+    - both empty -> boto3's own credential chain, which on EC2 finds the
+      instance role and locally finds ~/.aws/credentials or an SSO session.
+
+    Neither is more trusted than the other here; what bounds the damage is the
+    IAM policy behind the credential, which grants GetObject on uploads/* and
+    PutObject on runs/* and nothing else. Keep it that narrow whichever path
+    you use -- a static key with s3:* would be a far worse trade than a static
+    key.
     """
 
     def __init__(self, bucket: str, region: str, endpoint_url: str,
-                 sse: str, kms_key_id: str):
+                 sse: str, kms_key_id: str, access_key: str = "",
+                 secret_key: str = "", session_token: str = ""):
         import boto3
         from botocore.config import Config
 
         self.bucket = bucket
         self.sse = sse
         self.kms_key_id = kms_key_id
+
+        # Passed only when both halves are present. Handing boto3 a lone
+        # aws_access_key_id makes it ignore the argument and fall through to
+        # the chain, which is the silent-wrong-account failure config.py
+        # already refuses at startup -- this keeps that promise here too.
+        credentials = {}
+        if access_key and secret_key:
+            credentials["aws_access_key_id"] = access_key
+            credentials["aws_secret_access_key"] = secret_key
+            if session_token:
+                credentials["aws_session_token"] = session_token
+
         self._client = boto3.client(
             "s3",
             region_name=region or None,
@@ -246,6 +273,7 @@ class S3Store:
             # Absorbs transient throttling below our own retry layer, so a 503
             # does not consume one of the six upload attempts.
             config=Config(retries={"mode": "adaptive", "max_attempts": 3}),
+            **credentials,
         )
 
     def head(self, key: str) -> ObjectInfo | None:
@@ -325,7 +353,12 @@ def get_store() -> ObjectStore:
     global _store
     if _store is None:
         _store = (
-            S3Store(S3_BUCKET, S3_REGION, S3_ENDPOINT_URL, S3_SSE, S3_KMS_KEY_ID)
+            S3Store(
+                S3_BUCKET, S3_REGION, S3_ENDPOINT_URL, S3_SSE, S3_KMS_KEY_ID,
+                access_key=AWS_ACCESS_KEY_ID,
+                secret_key=AWS_SECRET_ACCESS_KEY,
+                session_token=AWS_SESSION_TOKEN,
+            )
             if STORAGE_BACKEND == "s3"
             else LocalStore(LOCAL_STORAGE_ROOT)
         )
