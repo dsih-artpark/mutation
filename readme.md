@@ -592,9 +592,27 @@ x86_64, every tool image is `linux/amd64`, and AMD runs it natively. Nothing
 like the Graviton problem.
 
 The one real architectural difference is **AVX-512**, which Ice Lake has and
-Milan does not. So the question is only ever: does anything in these pipelines
-use it? Measured, rather than assumed — counting AVX-512 kernel symbols in the
-shipped binaries:
+Milan does not.
+
+> ### ⚠ `snippy-fasta` requires AVX-512 and therefore cannot run on `m6a`
+>
+> Not as an optimisation — as an instruction set it will not start without.
+> `vcfstreamsort` and `vcfuniq` in the Snippy image are EVEX-encoded
+> (`vpternlogd`, `%k1` mask registers, the `62` prefix), so they raise SIGILL
+> on any CPU without AVX-512. That is one root cause for all three known
+> failures: Apple Silicon's x86 emulation, the hosted CI runner, and — by
+> construction — AMD Milan.
+>
+> This does **not** change the recommendation, because `snippy-fasta` does not
+> currently work anywhere (see [Known gaps](#known-gaps)) and `ont-lsdv` is
+> what the service runs. But it does mean the fix is to **rebuild the Snippy
+> image against a portable baseline**, not to buy an Intel instance. Paying 82%
+> more forever to accommodate one badly-compiled conda package is the wrong
+> trade; if `snippy-fasta` is needed before that rebuild happens, `m6i.xlarge`
+> is the stopgap.
+
+For everything else, the question is only ever: does anything use it? Measured,
+rather than assumed — counting AVX-512 kernel symbols in the shipped binaries:
 
 | Stage | Runtime | AVX-512 kernels shipped? |
 | --- | --- | --- |
@@ -602,6 +620,7 @@ shipped binaries:
 | `medaka` — opt-in | PyTorch 2.3.1 | **Yes** — 3390 symbols in `libtorch_cpu.so` |
 | `bcftools` — opt-in | C / htslib | No |
 | minimap2, samtools, fastp, snpEff | SSE/AVX2, Java | No |
+| **vcflib** (`snippy-fasta` only) | C++ | **Required, not optional** — see above |
 
 The stock TensorFlow build targets an AVX2 baseline — it is the same build
 that prints *"rebuild TensorFlow with the appropriate compiler flags"* about
@@ -1613,8 +1632,12 @@ an M-series Mac at all, and cannot be made to. Both escape routes are closed:
 **Emulation fails.** The tool images are `linux/amd64` — native on a Linux
 x86-64 box, emulated on a Mac. Most tools survive that; the vcflib binaries in
 the Snippy image do not. `vcfstreamsort` and `vcfuniq` die with SIGILL
-(exit 132), because the emulator does not implement every instruction they were
-compiled to use. Snippy gets as far as `freebayes-parallel` and dies in the pipe
+(exit 132).
+
+The instruction in question is now known: those binaries are **EVEX-encoded**,
+i.e. compiled with AVX-512 (`vpternlogd`, `%k1` mask registers). No emulator
+implements AVX-512, and neither does any CPU without it — which is why this is
+not really an Apple Silicon problem at all. See the next section. Snippy gets as far as `freebayes-parallel` and dies in the pipe
 after it, so bwa, samclip, samtools and freebayes all demonstrably work — it is
 specifically vcflib.
 
@@ -1964,14 +1987,19 @@ not a result.
    contigs do not match the reference is now rejected outright. But no run has
    ever used a genuine LSDV amplicon design, because nobody has supplied one.
    Until then, leave `primer.enabled` false.
-6. **`snippy-fasta` does not work, anywhere.** It cannot run on Apple Silicon
-   (SIGILL in vcflib under x86 emulation), and on a native amd64 CI runner it
-   dies at `freebayes-parallel` inside a second. Every CI run of it has failed;
-   there has never been a green one, and this entry previously described that
-   job as a working safety net. The cause is not yet known — the log that would
-   say is `work/snippy/snps.log`, which CI now dumps and uploads on failure.
-   Until that is read and fixed, **treat `snippy-fasta` as unavailable**;
-   `ont-lsdv` is the pipeline that works and is verified end to end.
+6. **`snippy-fasta` needs AVX-512, so it does not run on most hardware.**
+   `vcfstreamsort` and `vcfuniq` in the Snippy image are EVEX-encoded and raise
+   SIGILL on any CPU without AVX-512 — which covers Apple Silicon's emulator,
+   the hosted CI runner, and AMD EPYC Milan (`m6a`). Every CI run has failed;
+   there has never been a green one, and this entry once described that job as
+   a working safety net.
+
+   **The fix is to rebuild the image, not to buy Intel.** vcflib must be
+   compiled against a portable baseline (`-march=x86-64-v2`), which means
+   building it from source in `shared/docker/snippy/Dockerfile` rather than
+   taking the bioconda binary — snippy 4.6.0 pins `vcflib <=1.0.2`, so a newer
+   published build is not an option. Until then **treat `snippy-fasta` as
+   unavailable**; `ont-lsdv` works and is verified end to end.
 7. **Variant calls have only been checked against synthetic reads.** All three
    ONT callers report exactly the planted substitutions, which proves the
    invocations, the plumbing and the resource limits. It proves nothing about
