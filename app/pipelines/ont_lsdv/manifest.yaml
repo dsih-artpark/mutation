@@ -1,0 +1,41 @@
+schema_version: 1
+scope: ont-lsdv
+
+images:
+  # minimap2 and samtools share an image because align.py pipes between them;
+  # splitting them would mean materialising an intermediate SAM several times
+  # the size of the BAM. Same reason bcftools and NanoPack are here.
+  core:
+    source: build
+    dockerfile: docker/core/Dockerfile
+    context: docker/core
+    repository: dsihartpark/dharini-ont-core
+    version: "1.0.0"
+    platform: linux/amd64
+
+  # Separate because their Python, PyTorch/TensorFlow and htslib requirements
+  # are irreconcilable. All upstream, so nothing to maintain.
+  # Not ontresearch/medaka: that repository publishes only `latest` and
+  # `sha<commit>` tags, so there is no immutable semver tag to pin to and
+  # `latest` is rejected by the manifest loader. The bioconda build carries a
+  # build string in the tag, which is immutable, and it ships the model weights
+  # on disk -- inference does not reach the network on first use.
+  medaka:
+    source: registry
+    repository: quay.io/biocontainers/medaka
+    version: "2.1.1--py311h1d3aea1_1"
+  clair3:
+    source: registry
+    repository: hkubal/clair3
+    version: "v1.0.10"
+
+  # ARTIC align_trim publishes no usable image, so we build one. It carries its
+  # own samtools -- pinned to the same version as `core` -- because align_trim
+  # writes SAM to stdout and is piped straight into `samtools sort`.
+  align-trim:
+    source: build
+    dockerfile: docker/align-trim/Dockerfile
+    context: docker/align-trim
+    repository: dsihartpark/dharini-align-trim
+    version: "1.0.0"
+    platform: linux/amd64

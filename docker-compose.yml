@@ -1,37 +1,178 @@
+# Path parity is the load-bearing detail here.
+#
+# The worker spawns per-tool containers through the host Docker daemon, and the
+# daemon resolves every bind-mount source against the HOST filesystem -- never
+# against the container that asked. Mounting the runs directory at the same
+# absolute path on both sides means a path the worker computes is also valid on
+# the host, so the tool containers see the real data.
+#
+# Get this wrong and the failure is silent rather than loud: Docker creates an
+# empty directory at the missing host path, mounts that, and the tool reports a
+# confusing "file not found" against data that plainly exists.
+#
+# Set RUNS_ROOT and REFS_ROOT to absolute host paths in .env before starting.
+
+x-app: &app
+  build:
+    context: .
+    # Explicit, so that adding a stage after `runtime` in the Dockerfile cannot
+    # quietly ship the developer image -- pytest and its dependencies included --
+    # to production.
+    target: runtime
+  platform: linux/amd64
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    RUNS_ROOT: ${RUNS_ROOT:-/srv/dharini/runs}
+    REFS_ROOT: ${REFS_ROOT:-/srv/dharini/references}
+    REDIS_URL: redis://redis:6379/0
+    DATABASE_URL: postgresql+psycopg://dharini:${POSTGRES_PASSWORD:-dharini}@postgres:5432/dharini
+  volumes:
+    - ${RUNS_ROOT:-/srv/dharini/runs}:${RUNS_ROOT:-/srv/dharini/runs}
+    - ${REFS_ROOT:-/srv/dharini/references}:${REFS_ROOT:-/srv/dharini/references}
+  depends_on:
+    redis:
+      condition: service_started
+    postgres:
+      condition: service_healthy
+
 services:
   api:
-    platform: linux/amd64
-    build: .
-    container_name: lsdv_api
+    <<: *app
+    container_name: dharini_api
     ports:
       - "8000:8000"
-    depends_on:
-      - redis
-    volumes:
-      - ./runs:/app/runs
 
   worker:
-    platform: linux/amd64
-    build: .
-    container_name: lsdv_worker
+    <<: *app
+    container_name: dharini_worker
     command: celery -A app.worker.celery worker --loglevel=info
-    depends_on:
-      - redis
     volumes:
-      - ./runs:/app/runs
+      - ${RUNS_ROOT:-/srv/dharini/runs}:${RUNS_ROOT:-/srv/dharini/runs}
+      - ${REFS_ROOT:-/srv/dharini/references}:${REFS_ROOT:-/srv/dharini/references}
+      # Lets the worker start sibling tool containers.
+      #
+      # ⚠ This is root-equivalent access to the host. It is acceptable here
+      #   only because the API in front of it never passes client input to a
+      #   shell (see runtime/runner.py). Do not add a code path that does.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # GID of the host's docker group, so the socket is usable without running
+    # as root. Find it with: getent group docker | cut -d: -f3
+    group_add:
+      - ${DOCKER_GID:-999}
 
   beat:
-    platform: linux/amd64
-    build: .
-    container_name: lsdv_beat
+    <<: *app
+    container_name: dharini_beat
     command: celery -A app.worker.celery beat --loglevel=info
-    depends_on:
-      - redis
+
+  # Developer workflow: pytest and tools/images.py. Docker is the only thing this
+  # project asks anyone to install, so neither runs on a host Python.
+  #
+  # `profiles:` keeps it out of `docker compose up`. `docker compose run` turns a
+  # service's own profiles on implicitly, so the Makefile needs no --profile flag.
+  dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      target: dev
+      # Native, not the linux/amd64 production is pinned to -- see the
+      # BASE_PLATFORM comment in the Dockerfile. The Makefile supplies it.
+      args:
+        BASE_PLATFORM: ${DHARINI_DEV_PLATFORM:-linux/amd64}
+    platform: ${DHARINI_DEV_PLATFORM:-linux/amd64}
+    # Same path parity trap as RUNS_ROOT above. The docker-marked tests hand
+    # `docker run` a bind-mount source under pytest's tmp_path, and the daemon
+    # resolves that against the HOST filesystem. Mounting this checkout at its
+    # own host path is what makes one path string valid on both sides; mounted
+    # at /app it would not be, and the daemon would silently mount an empty
+    # directory instead. The Makefile sets DHARINI_REPO to $(CURDIR).
+    working_dir: ${DHARINI_REPO:-$PWD}
     volumes:
-      - ./runs:/app/runs
+      - ${DHARINI_REPO:-$PWD}:${DHARINI_REPO:-$PWD}
+      # Lets this container start sibling containers -- the same mechanism the
+      # worker uses, which is what makes `-m docker` tests test the real thing.
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - ${DOCKER_GID:-999}
+    environment:
+      # The bind mount writes back to the working tree, so bytecode written as
+      # root inside the container would leave root-owned __pycache__ directories
+      # in a developer's checkout on any Linux host.
+      PYTHONDONTWRITEBYTECODE: "1"
+      # Withholding `env_file: .env` below is not enough on its own: config.py
+      # calls load_dotenv(), which reads the FILE off the bind-mounted checkout
+      # regardless of this container's environment. This is what actually stops
+      # a developer's deployment .env from reaching `make smoke`, `make params`
+      # and tools/run_local.py.
+      DHARINI_IGNORE_DOTENV: "1"
+      # ...which then means those three have to stand on their own, and they
+      # could not: app.config defaults STORAGE_BACKEND to s3 and refuses to
+      # import without a bucket, and refuses again without API_KEYS. Local work
+      # has neither by design, so `make params` and `make smoke` failed on a
+      # fresh clone and only appeared to work on a machine whose .env was
+      # leaking in. These are the same two choices conftest.py makes for the
+      # suite; the dev container now makes them for everything else.
+      STORAGE_BACKEND: local
+      ALLOW_UNAUTHENTICATED: "true"
+      # CI sets this to 1 so that the seven docker-marked tests failing to find a
+      # daemon is a failure rather than a skip -- see the docker_required fixture
+      # in tests/conftest.py. Empty on a developer's machine, where skipping is
+      # the right answer.
+      REQUIRE_DOCKER: ${REQUIRE_DOCKER:-}
+    # Deliberately no `env_file: .env` and no depends_on. tests/conftest.py points
+    # DATABASE_URL at SQLite and puts Celery in eager mode, so Postgres and Redis
+    # are never contacted; loading a developer's .env would let a stray local
+    # value decide whether the suite passes.
+    init: true
+
+  # S3-compatible endpoint for the docker-marked storage tests.
+  #
+  # The suite runs against LocalStore and needs nothing here. This exists so
+  # S3Store -- the implementation that actually runs in production -- is
+  # exercised against a real S3 API rather than only reasoned about. Without
+  # it, the one backend that matters is the one backend with no test.
+  #
+  # `profiles:` keeps it out of `docker compose up`; `docker compose run dev`
+  # turns a dependency's profile on implicitly.
+  minio:
+    profiles: ["dev"]
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    container_name: dharini_minio
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: dharini
+      MINIO_ROOT_PASSWORD: dharini-dev-secret
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7
-    container_name: lsdv_redis
-    ports:
-      - "6379:6379"
+    container_name: dharini_redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --appendonly no
+    volumes:
+      - redis_data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: dharini_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dharini
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dharini}
+      POSTGRES_DB: dharini
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dharini"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  redis_data:
+  postgres_data:

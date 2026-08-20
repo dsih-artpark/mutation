@@ -2,3 +2,39 @@
 snpeff_build/
 __pycache__/
 runs/*
+
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+*.db
+# SQLite runs in WAL mode (see app/db.py), which leaves two sidecar files
+# beside the database. Ignoring only *.db leaves them in `git status`.
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# Reference indexes are regenerated per run.
+/data/*.mmi
+
+# Large inputs and generated outputs from the ONT reference copy.
+ONTpipeline/input/
+ONTpipeline/output/
+ONTpipeline/logs/
+
+# The bioinformatics team's original delivery: 17 MB including a test FASTQ.
+# The adapted implementation lives in app/pipelines/ont_lsdv/.
+AWS_PIPELINE-FINAL.zip
+snpEff_summary.html
+
+.DS_Store
+.idea/
+.vscode/
+
+# Regenerated deterministically by tools/make_fixtures.py -- not committed.
+fixtures/
+
+# The upstream ONT checkout, kept in-tree for reference. Carries its own .git,
+# so an accidental `git add` would create a broken embedded repository.
+ONTPipeline/
