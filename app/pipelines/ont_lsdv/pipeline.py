@@ -98,7 +98,7 @@ class OntLsdvPipeline(Pipeline):
                 "description": "Manual length and quality thresholds. Only used when "
                                "filter mode is 'manual' and NanoFilt is enabled.",
                 "properties": {
-                    "enabled": {"type": "boolean", "default": False},
+                    "enabled": {"type": "boolean", "default": True},
                     "min_quality": {"type": "integer", "minimum": 0, "maximum": 50, "default": 10},
                     "min_length": {"type": "integer", "minimum": 0, "default": 500},
                     "headcrop": {"type": "integer", "minimum": 0, "default": 0},
@@ -126,7 +126,7 @@ class OntLsdvPipeline(Pipeline):
                                "without one.",
                 "properties": {
                     "enabled": {
-                        "type": "boolean", "default": False,
+                        "type": "boolean", "default": True,
                         "description": "Requires an ARTIC BED upload whose contig names and "
                                        "coordinates match the reference exactly. Without "
                                        "trimming, variants in primer-binding regions are "
@@ -144,7 +144,7 @@ class OntLsdvPipeline(Pipeline):
                     "tool": {
                         "type": "string",
                         "enum": ["bcftools", "medaka", "clair3"],
-                        "default": "clair3",
+                        "default": "medaka",
                         "description": "Clair3 and Medaka run neural-network inference on CPU "
                                        "and are substantially slower than bcftools. Clair3 is "
                                        "the default: it trades runtime for accuracy.",
@@ -206,7 +206,7 @@ class OntLsdvPipeline(Pipeline):
                                "and the called variants.",
                 "properties": {
                     "tool": {
-                        "type": "string", "enum": ["bcftools", "medaka"], "default": "bcftools"},
+                        "type": "string", "enum": ["bcftools", "medaka"], "default": "medaka"},
                 },
             },
 
