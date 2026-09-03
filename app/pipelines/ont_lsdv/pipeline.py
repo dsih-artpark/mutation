@@ -121,19 +121,27 @@ class OntLsdvPipeline(Pipeline):
             "primer": {
                 "type": "object", "additionalProperties": False,
                 "title": "Primer trimming",
-                "description": "For amplicon runs. Needs an ARTIC primer scheme BED "
+                "description": "For amplicon runs. Needs an ARTIC primer scheme BED or BEDPE "
                                "uploaded alongside the reads; the stage is skipped "
                                "without one.",
                 "properties": {
                     "enabled": {
                         "type": "boolean", "default": True,
-                        "description": "Requires an ARTIC BED upload whose contig names and "
+                        "description": "Requires an ARTIC BED or BEDPE upload whose contig names and "
                                        "coordinates match the reference exactly. Without "
                                        "trimming, variants in primer-binding regions are "
                                        "unreliable.",
                     },
+                    "tool": {
+                        "type": "string",
+                        "enum": ["align_trim", "bamclipper"],
+                        "default": "align_trim",
+                        "title": "Primer trimming tool",
+                        "description": "Select align_trim (ARTIC BED) or bamclipper (BEDPE).",
+                    },
                 },
             },
+
 
             "variant": {
                 "type": "object", "additionalProperties": False,
