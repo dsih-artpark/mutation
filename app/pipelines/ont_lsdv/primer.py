@@ -7,59 +7,69 @@ from pathlib import Path
 from ...runtime.context import RunContext
 from ...runtime.runner import sh
 from . import specs
-from .common import TRIMMED_BAM
+from .common import TRIMMED_BAM, threads
+
 
 
 def run(ctx: RunContext, bam: Path, reference: Path) -> Path:
-    """Trim primer-binding regions when an ARTIC BED was supplied.
+    """Trim primer-binding regions when an ARTIC BED or BEDPE was supplied.
 
     Returns the BAM every downstream stage should read, so nothing has to probe
     the filesystem to work out whether trimming happened.
-
-    Skipping is a legitimate outcome, not a failure -- but it changes how the
-    variants should be read, so it is recorded on the run rather than only
-    printed as a warning the way the original did.
     """
     if not ctx.param("primer.enabled", False):
         ctx.skip("primer", "primer trimming not enabled")
         _flag_untrimmed(ctx)
         return bam
 
-    bed = ctx.extra_input("primer_bed")
+    tool = str(ctx.param("primer.tool", "align_trim")).lower()
+
+    bed = ctx.extra_input("primer_bedpe") or ctx.extra_input("primer_bed")
     if not bed or not bed.exists():
-        ctx.skip("primer", "primer trimming enabled but no primer BED file was uploaded")
+        ctx.skip("primer", f"primer trimming enabled ({tool}) but no primer BED/BEDPE file was uploaded")
         _flag_untrimmed(ctx)
         return bam
 
     trimmed = ctx.work_dir / TRIMMED_BAM
 
     with ctx.stage("primer"):
-        _validate_primer_scheme(bed, reference)
+        if tool == "align_trim":
+            _validate_primer_scheme(bed, reference)
+            ctx.run(
+                specs.ALIGN_TRIM,
+                sh('align_trim --samfile "$BAM" --report "$REPORT" "$BED" | samtools sort -o "$OUT"'),
+                env={
+                    "BAM": str(bam),
+                    "REPORT": str(ctx.work_dir / "align_trim.report.tsv"),
+                    "BED": str(bed),
+                    "OUT": str(trimmed),
+                },
+            )
+            ctx.require(trimmed)
+            ctx.run(specs.ALIGN_TRIM, ["samtools", "index", str(trimmed)])
 
-        # align_trim writes SAM to stdout, so it and samtools have to share an
-        # image: materialising the intermediate SAM would cost several times
-        # the size of the BAM. Constant script, data via env.
-        #
-        # --normalise is deliberately not passed. align_trim 1.2.0 defaults it
-        # to 0, but older ARTIC releases defaulted to 100 -- which silently
-        # downsampled every amplicon to 100x coverage before variant calling.
-        ctx.run(
-            specs.ALIGN_TRIM,
-            sh('align_trim --samfile "$BAM" --report "$REPORT" "$BED" | samtools sort -o "$OUT"'),
-            env={
-                "BAM": str(bam),
-                "REPORT": str(ctx.work_dir / "align_trim.report.tsv"),
-                "BED": str(bed),
-                "OUT": str(trimmed),
-            },
-        )
-        ctx.require(trimmed)
+        elif tool == "bamclipper":
+            ctx.run(
+                specs.BAMCLIPPER,
+                sh('bamclipper.sh -b "$BAM" -p "$BED" -n "$THREADS" && samtools sort -o "$OUT" "${BAM%.bam}.primerclipped.bam"'),
+                env={
+                    "BAM": str(bam),
+                    "BED": str(bed),
+                    "OUT": str(trimmed),
+                    "THREADS": str(threads(ctx, specs.BAMCLIPPER.cpus)),
+                },
+            )
+            ctx.require(trimmed)
+            ctx.run(specs.BAMCLIPPER, ["samtools", "index", str(trimmed)])
 
-        ctx.run(specs.ALIGN_TRIM, ["samtools", "index", str(trimmed)])
+        else:
+            raise ValueError(f"unsupported primer trimming tool: {tool}")
 
         ctx.metric("primer_trimmed", True)
+        ctx.metric("primer_tool", tool)
 
     return trimmed
+
 
 
 _BED_COLUMNS = 7

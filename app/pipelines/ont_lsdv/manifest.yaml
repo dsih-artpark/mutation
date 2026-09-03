@@ -39,3 +39,12 @@ images:
     repository: dsihartpark/dharini-align-trim
     version: "1.0.0"
     platform: linux/amd64
+
+  bamclipper:
+    source: build
+    dockerfile: docker/bamclipper/Dockerfile
+    context: docker/bamclipper
+    repository: dsihartpark/dharini-bamclipper
+    version: "1.0.0"
+    platform: linux/amd64
+
