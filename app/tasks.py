@@ -151,7 +151,13 @@ def execute_run(self, run_id: str) -> dict:
     # An object-store run writes every input under the pipeline's own declared
     # name. Only a run queued before this deploy carries a separately stored one.
     if input_key:
-        stored_name = pipeline.input_filename
+        input_key_lower = input_key.lower()
+        if (input_key_lower.endswith(".fastq") or input_key_lower.endswith(".fq")) and pipeline.input_filename.endswith(".gz"):
+            stored_name = pipeline.input_filename[:-3]
+        elif (input_key_lower.endswith(".fastq.gz") or input_key_lower.endswith(".fq.gz")) and not pipeline.input_filename.endswith(".gz"):
+            stored_name = pipeline.input_filename + ".gz"
+        else:
+            stored_name = pipeline.input_filename
         extra_inputs = {
             key: pipeline.extra_inputs[key].filename
             for key in extra_input_keys
@@ -215,7 +221,7 @@ def _fetch_inputs(ctx: RunContext, pipeline, input_key: str | None,
         return
 
     store = get_store()
-    wanted: list[tuple[str, str]] = [(input_key, pipeline.input_filename)]
+    wanted: list[tuple[str, str]] = [(input_key, ctx.input_name or pipeline.input_filename)]
 
     for key, object_key in extra_input_keys.items():
         extra = pipeline.extra_inputs.get(key)

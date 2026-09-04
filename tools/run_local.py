@@ -107,10 +107,15 @@ def _parse_params(pairs: list[str]) -> dict:
 def _stage_run_directory(pipeline, run_id: str, source: Path, extras: list[str]) -> tuple:
     paths = RunPaths.for_run(RUNS_ROOT, run_id).create()
 
-    # Same normalisation the API performs: the file is stored under the
-    # pipeline's declared name so a client filename never reaches a command
-    # line. Doing it here too is what makes a local run representative.
-    shutil.copy(source, paths.input / pipeline.input_filename)
+    # Preserve .fastq vs .fastq.gz matching source if source is uncompressed
+    target_name = pipeline.input_filename
+    source_name = source.name.lower()
+    if (source_name.endswith(".fastq") or source_name.endswith(".fq")) and target_name.endswith(".gz"):
+        target_name = target_name[:-3]
+    elif (source_name.endswith(".fastq.gz") or source_name.endswith(".fq.gz")) and not target_name.endswith(".gz"):
+        target_name = target_name + ".gz"
+
+    shutil.copy(source, paths.input / target_name)
 
     extra_inputs: dict[str, str] = {}
     for pair in extras:
@@ -123,7 +128,7 @@ def _stage_run_directory(pipeline, run_id: str, source: Path, extras: list[str])
         shutil.copy(origin, paths.input / origin.name)
         extra_inputs[key] = origin.name
 
-    return paths, extra_inputs
+    return paths, target_name, extra_inputs
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -172,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     run_id = args.run_id or f"local-{int(time.time())}"
-    paths, extra_inputs = _stage_run_directory(pipeline, run_id, source, args.extra)
+    paths, input_name, extra_inputs = _stage_run_directory(pipeline, run_id, source, args.extra)
 
     print(f"pipeline : {pipeline.id} {pipeline.version}")
     print(f"run id   : {run_id}")
@@ -187,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         refs_dir=REFS_ROOT,
         recorder=_PrintingRecorder(len(pipeline.stages)),
         stages=list(pipeline.stages),
-        input_name=pipeline.input_filename,
+        input_name=input_name,
         extra_inputs=extra_inputs,
     )
 
