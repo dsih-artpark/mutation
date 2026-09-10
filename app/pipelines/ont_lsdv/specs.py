@@ -25,7 +25,7 @@ _HOUR = 3600
 # table records real peak usage per stage -- after ~20 runs, replace these with
 # measured values rather than guesses.
 NANOPLOT = StageSpec(image=CORE_IMAGE, cpus=2, memory_gb=4, timeout_s=_HOUR)
-FASTP = StageSpec(image=CORE_IMAGE, cpus=2, memory_gb=2, timeout_s=_HOUR)
+FASTP = StageSpec(image=CORE_IMAGE, cpus=2, memory_gb=4, timeout_s=_HOUR)
 NANOFILT = StageSpec(image=CORE_IMAGE, cpus=2, memory_gb=2, timeout_s=_HOUR)
 ALIGN = StageSpec(image=CORE_IMAGE, cpus=4, memory_gb=6, timeout_s=2 * _HOUR)
 SAMTOOLS = StageSpec(image=CORE_IMAGE, cpus=2, memory_gb=2, timeout_s=_HOUR)
