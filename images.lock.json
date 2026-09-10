@@ -5,15 +5,15 @@
       "repository": "dsihartpark/dharini-align-trim",
       "version": "1.0.0",
       "platform": "linux/amd64",
-      "digest": "sha256:d26c6f5f8f273a7bec38fc53fb3edfaafb1af2f163095eaf1728a18d714e0066",
-      "ref": "dsihartpark/dharini-align-trim@sha256:d26c6f5f8f273a7bec38fc53fb3edfaafb1af2f163095eaf1728a18d714e0066"
+      "digest": "sha256:e01bfb0f537f52a2e9823a3ee3b8d54518a693360c29212d985d9e10ac18dde9",
+      "ref": "dsihartpark/dharini-align-trim@sha256:e01bfb0f537f52a2e9823a3ee3b8d54518a693360c29212d985d9e10ac18dde9"
     },
     "ont-lsdv:bamclipper": {
       "repository": "dsihartpark/dharini-bamclipper",
       "version": "1.0.0",
       "platform": "linux/amd64",
-      "digest": "sha256:ce11ebf60d8afa7bacc72d0513a29aa4b68662826b82f2e9a9d43f034b29608f",
-      "ref": "dsihartpark/dharini-bamclipper@sha256:ce11ebf60d8afa7bacc72d0513a29aa4b68662826b82f2e9a9d43f034b29608f"
+      "digest": "sha256:5e5737753e689058df130a8d74804029dbf30e5841ab2652cf6f648fca4ad802",
+      "ref": "dsihartpark/dharini-bamclipper@sha256:5e5737753e689058df130a8d74804029dbf30e5841ab2652cf6f648fca4ad802"
     },
     "ont-lsdv:clair3": {
       "repository": "hkubal/clair3",
@@ -26,8 +26,8 @@
       "repository": "dsihartpark/dharini-ont-core",
       "version": "1.0.0",
       "platform": "linux/amd64",
-      "digest": "sha256:ba4e6d21f6ac1e06f4f142676b7b4dd2b54f6c81d5147400914b6edda5e52432",
-      "ref": "dsihartpark/dharini-ont-core@sha256:ba4e6d21f6ac1e06f4f142676b7b4dd2b54f6c81d5147400914b6edda5e52432"
+      "digest": "sha256:6e2b799afcd4cd5bf791330c0ca102dc68b8237b768915163946848efb56d2f5",
+      "ref": "dsihartpark/dharini-ont-core@sha256:6e2b799afcd4cd5bf791330c0ca102dc68b8237b768915163946848efb56d2f5"
     },
     "ont-lsdv:medaka": {
       "repository": "quay.io/biocontainers/medaka",
@@ -40,15 +40,15 @@
       "repository": "dsihartpark/dharini-snippy",
       "version": "4.6.0-2",
       "platform": "linux/amd64",
-      "digest": "sha256:798f9f5668e1258031c9e36861c5e20885be84a2998cfd37a7e414d710ae4872",
-      "ref": "dsihartpark/dharini-snippy@sha256:798f9f5668e1258031c9e36861c5e20885be84a2998cfd37a7e414d710ae4872"
+      "digest": "sha256:da39be3cacb97220c18f99343106d91e083b0943d55cb64fc12e0ec0a57c02e5",
+      "ref": "dsihartpark/dharini-snippy@sha256:da39be3cacb97220c18f99343106d91e083b0943d55cb64fc12e0ec0a57c02e5"
     },
     "shared:snpeff-lsdv": {
       "repository": "dsihartpark/dharini-snpeff",
       "version": "5.4-lsdv-1",
       "platform": "linux/amd64",
-      "digest": "sha256:b8ca7fc9b3e01b71559f1d4686c892e24eb587c1bf6ed2f9166106a0ebbca7b4",
-      "ref": "dsihartpark/dharini-snpeff@sha256:b8ca7fc9b3e01b71559f1d4686c892e24eb587c1bf6ed2f9166106a0ebbca7b4"
+      "digest": "sha256:9bace0216c7c1870273c2c1b719c608742219e9193b269f6bbcf688f146af7c0",
+      "ref": "dsihartpark/dharini-snpeff@sha256:9bace0216c7c1870273c2c1b719c608742219e9193b269f6bbcf688f146af7c0"
     }
   }
 }
