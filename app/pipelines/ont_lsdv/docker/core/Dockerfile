@@ -16,6 +16,7 @@ RUN micromamba install -y -n base -c bioconda -c conda-forge \
       fastp=0.24.0 \
       nanofilt=2.8.0 \
       nanoplot=1.42.0 \
+      'plotly<7' \
       python-kaleido=0.2.1 \
  && micromamba clean -a -y
 
