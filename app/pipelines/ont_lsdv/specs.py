@@ -33,6 +33,8 @@ SAMTOOLS = StageSpec(image=CORE_IMAGE, cpus=2, memory_gb=2, timeout_s=_HOUR)
 # Carries its own samtools at the same pin as `core`, so the align_trim ->
 # samtools sort pipe and the index that follows it stay in one container.
 ALIGN_TRIM = StageSpec(image=img("align-trim"), cpus=2, memory_gb=4, timeout_s=_HOUR)
+BAMCLIPPER = StageSpec(image=img("bamclipper"), cpus=2, memory_gb=4, timeout_s=_HOUR)
+
 
 BCFTOOLS = StageSpec(image=CORE_IMAGE, cpus=2, memory_gb=4, timeout_s=2 * _HOUR)
 
