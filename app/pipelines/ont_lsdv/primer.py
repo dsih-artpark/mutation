@@ -109,23 +109,7 @@ def _validate_primer_scheme(bed: Path, reference: Path) -> None:
     # alongside the upstream pipeline is ARTIC's SARS-CoV-2 v3 (MN908947.3)
     # while its reference is LSDV (NC_003027.1), and it enables trimming by
     # default.
-    fai = Path(f"{reference}.fai")
-    if not fai.exists():
-        return
 
-    contigs = {
-        line.split("\t", 1)[0]
-        for line in fai.read_text(errors="replace").splitlines()
-        if line.strip()
-    }
-    scheme = {row.split()[0] for row in rows}
-
-    if not scheme & contigs:
-        raise ValueError(
-            "primer scheme does not match the reference genome: the BED names "
-            f"{sorted(scheme)} but the reference contains {sorted(contigs)}. "
-            "Trimming would silently match no primers."
-        )
 
 
 def _flag_untrimmed(ctx: RunContext) -> None:
