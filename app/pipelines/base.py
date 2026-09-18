@@ -9,7 +9,7 @@ no database changes.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..runtime.context import RunContext, RunResult
 
@@ -35,8 +35,34 @@ class ExtraInput:
 
     extensions: tuple[str, ...] = ()
     required: bool = False
+    """Enforced only while the input is in use -- see `when`."""
+
     title: str = ""
     description: str = ""
+
+    when: dict[str, bool | int | str] = field(default_factory=dict)
+    """Params that put this input in use, as dot path -> the value it must equal.
+    Every condition must hold. Empty means always in use.
+
+    The link a params schema cannot express: ont-lsdv's `primer.tool` decides
+    whether the primer scheme is a BED or a BEDPE, so each file belongs to one
+    tool. Published by `describe()` so Dharini shows only the picker that
+    applies, and enforced by the API, which rejects a missing input that is in
+    use and a supplied one that is not -- a file handed to the wrong tool is
+    misread without an error."""
+
+    def applies(self, params: dict) -> bool:
+        """Whether this input is in use for a validated, defaults-filled params dict."""
+        return all(_lookup(params, path) == expected for path, expected in self.when.items())
+
+
+def _lookup(params: dict, path: str) -> object:
+    value: object = params
+    for segment in path.split("."):
+        if not isinstance(value, dict) or segment not in value:
+            return None
+        value = value[segment]
+    return value
 
 
 class Pipeline(ABC):
@@ -133,6 +159,7 @@ class Pipeline(ABC):
                     "required": extra.required,
                     "title": extra.title,
                     "description": extra.description,
+                    "when": dict(extra.when),
                 }
                 for key, extra in self.extra_inputs.items()
             },

@@ -89,8 +89,8 @@ def create_run(
     except KeyRejected as exc:
         raise HTTPException(422, f"input key rejected: {exc}") from None
 
-    # 6. Extra inputs the pipeline actually declares.
-    _check_extra_inputs(pipeline, extra_keys)
+    # 6. Extra inputs the pipeline actually declares, in use for these params.
+    _check_extra_inputs(pipeline, extra_keys, validated)
 
     # 7. Extensions, from the display filename when given, else the key.
     display_name = request.input_filename or input_key.rsplit("/", 1)[-1]
@@ -161,8 +161,13 @@ def _accepted(run: Run, pipeline, session: Session) -> RunAccepted:
     )
 
 
-def _check_extra_inputs(pipeline, supplied: dict[str, str]) -> None:
-    """Every supplied extra is declared, and every required one is supplied."""
+def _check_extra_inputs(pipeline, supplied: dict[str, str], params: dict) -> None:
+    """Every supplied extra is declared and in use, and every required one in
+    use is supplied.
+
+    `params` must already be validated, so defaults are filled in: a `when` on
+    `primer.tool` has to see "align_trim" even when the caller left it out.
+    """
     declared = pipeline.extra_inputs
     unknown = sorted(set(supplied) - set(declared))
     if unknown:
@@ -172,11 +177,37 @@ def _check_extra_inputs(pipeline, supplied: dict[str, str]) -> None:
             f"Declared: {', '.join(sorted(declared)) or '(none)'}",
         )
 
+    # Rejected rather than ignored: a primer BED supplied for bamclipper is a
+    # caller who believes trimming will use it, and it will not.
+    unused = sorted(key for key in supplied if not declared[key].applies(params))
+    if unused:
+        raise HTTPException(
+            422,
+            "extra input(s) not used with these params: "
+            + "; ".join(f"{key} applies only when {_conditions(declared[key])}" for key in unused),
+        )
+
     missing = sorted(
-        key for key, extra in declared.items() if extra.required and key not in supplied
+        key
+        for key, extra in declared.items()
+        if extra.required and extra.applies(params) and key not in supplied
     )
     if missing:
-        raise HTTPException(422, f"{pipeline.id} requires extra input(s): {', '.join(missing)}")
+        raise HTTPException(
+            422,
+            f"{pipeline.id} requires extra input(s): "
+            + ", ".join(
+                f"{key} (because {_conditions(declared[key])})" if declared[key].when else key
+                for key in missing
+            ),
+        )
+
+
+def _conditions(extra) -> str:
+    return ", ".join(
+        f"{path}={str(value).lower() if isinstance(value, bool) else value}"
+        for path, value in extra.when.items()
+    )
 
 
 def _head_or_reject(key: str) -> int:
