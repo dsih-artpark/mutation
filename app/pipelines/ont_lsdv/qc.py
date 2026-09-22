@@ -111,6 +111,7 @@ def _fastp(ctx: RunContext, fastq: Path) -> Path:
             "fastp",
             "-i", str(fastq),
             "-o", str(output),
+            "-A",
             "-q", str(int(ctx.param("fastp.qualified_quality_phred", 15))),
             "-l", str(int(ctx.param("fastp.length_required", 500))),
             "-h", str(html),
