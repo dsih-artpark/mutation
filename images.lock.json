@@ -26,8 +26,7 @@
       "repository": "dsihartpark/dharini-ont-core",
       "version": "1.0.0",
       "platform": "linux/amd64",
-      "digest": "sha256:ba4e6d21f6ac1e06f4f142676b7b4dd2b54f6c81d5147400914b6edda5e52432",
-      "ref": "dsihartpark/dharini-ont-core@sha256:ba4e6d21f6ac1e06f4f142676b7b4dd2b54f6c81d5147400914b6edda5e52432"
+      "ref": "dsihartpark/dharini-ont-core:1.0.0"
     },
     "ont-lsdv:medaka": {
       "repository": "quay.io/biocontainers/medaka",
