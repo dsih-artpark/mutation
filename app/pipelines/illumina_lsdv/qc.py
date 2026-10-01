@@ -31,8 +31,8 @@ def run(ctx: RunContext, r1: Path, r2: Path) -> tuple[Path, Path]:
             ctx.run(specs.QC, argv)
             ctx.require(clean1)
             ctx.require(clean2)
-            _publish_reports(ctx, [html, report_json])
             _fastp_metrics(ctx, report_json)
+            _publish_reports(ctx, [html, report_json])
             return clean1, clean2
 
         if tool == "fastqc":
@@ -95,7 +95,7 @@ def _fastp_metrics(ctx: RunContext, path: Path) -> None:
     import json
 
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(errors="replace"))
         before = data.get("summary", {}).get("before_filtering", {})
         after = data.get("summary", {}).get("after_filtering", {})
         if before.get("total_reads") is not None:
@@ -104,5 +104,5 @@ def _fastp_metrics(ctx: RunContext, path: Path) -> None:
             ctx.metric("reads_after_qc", int(after["total_reads"]))
         if after.get("q30_rate") is not None:
             ctx.metric("qc_q30_percent", round(float(after["q30_rate"]) * 100, 2))
-    except (OSError, ValueError, TypeError):
-        ctx.log("[qc] could not parse fastp JSON metrics")
+    except Exception as exc:
+        ctx.log(f"[qc] could not parse fastp JSON metrics: {exc}")
