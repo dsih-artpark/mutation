@@ -12,8 +12,7 @@ from .common import normalise_vcf, threads
 
 def run(ctx: RunContext, bam: Path, reference: Path) -> Path:
     tool = str(ctx.param("variant.tool", "bcftools")).lower()
-    raw = ctx.work_dir / f"variants.{tool}.raw.vcf"
-    filtered = ctx.work_dir / f"variants.{tool}.vcf.gz"
+    raw = ctx.work_dir / f"variants.{tool}.vcf"
 
     with ctx.stage("variant"):
         if tool == "bcftools":
@@ -33,12 +32,6 @@ def run(ctx: RunContext, bam: Path, reference: Path) -> Path:
 
         ctx.require(raw, hint=f"{tool} did not produce a VCF")
         compressed = normalise_vcf(ctx, raw)
-        ctx.run(specs.SAMTOOLS, [
-            "bcftools", "filter", "-i", str(ctx.param("variant.filter", "QUAL > 20 && INFO/DP > 10")),
-            "-Oz", "-o", str(filtered), str(compressed),
-        ])
-        ctx.require(filtered)
-        ctx.run(specs.SAMTOOLS, ["bcftools", "index", "-f", "-t", str(filtered)])
         ctx.metric("variant_caller", tool)
 
-    return filtered
+    return compressed

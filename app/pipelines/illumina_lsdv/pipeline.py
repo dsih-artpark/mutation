@@ -15,7 +15,7 @@ class IlluminaLsdvPipeline(Pipeline):
     version = "1.0.0"
     display_name = "Illumina — LSDV"
     description = (
-        "Paired-end Illumina FASTQ analysis for LSDV: read QC, BWA or Bowtie2 "
+        "Paired-end Illumina FASTQ analysis for LSDV: fastp read QC, BWA "
         "alignment, optional iVar primer trimming, variant calling, consensus, "
         "snpEff annotation and an interactive report."
     )
@@ -49,28 +49,12 @@ class IlluminaLsdvPipeline(Pipeline):
                         "title": "Threads", "description": "Requested CPU threads, capped by each stage allocation."},
             "reference": {"type": "string", "default": "lsdv_reference.fasta",
                           "title": "Reference genome", "description": "Reference FASTA filename in the shared references directory."},
-            "qc": {"type": "object", "additionalProperties": False, "title": "Read quality control",
-                   "description": "Choose a paired-read QC and trimming workflow.", "properties": {
-                       "tool": {"type": "string", "enum": ["fastp", "fastqc", "trimmomatic", "fastqc_trimmomatic"], "default": "fastp",
-                                "title": "QC tool", "description": "fastp trims and reports; FastQC reports only; Trimmomatic trims; the combined option reports before and after trimming."},
-                   }},
             "fastp": {"type": "object", "additionalProperties": False, "title": "fastp settings",
-                      "description": "Read quality and length thresholds used when fastp is selected.", "properties": {
+                      "description": "Read quality and length thresholds used by fastp.", "properties": {
                           "qualified_quality_phred": {"type": "integer", "minimum": 0, "maximum": 40, "default": 20},
                           "length_required": {"type": "integer", "minimum": 1, "default": 50},
                           "detect_adapter_for_pe": {"type": "boolean", "default": True},
                       }},
-            "trimmomatic": {"type": "object", "additionalProperties": False, "title": "Trimmomatic settings",
-                            "description": "Sliding-window and minimum-read-length settings for Trimmomatic.", "properties": {
-                                "sliding_window_quality": {"type": "integer", "minimum": 1, "maximum": 40, "default": 20},
-                                "sliding_window_size": {"type": "integer", "minimum": 1, "maximum": 10, "default": 4},
-                                "min_length": {"type": "integer", "minimum": 1, "default": 50},
-                            }},
-            "alignment": {"type": "object", "additionalProperties": False, "title": "Read alignment",
-                          "description": "Choose the paired-end aligner.", "properties": {
-                              "tool": {"type": "string", "enum": ["bwa", "bowtie2"], "default": "bwa",
-                                       "title": "Aligner", "description": "BWA-MEM is the recommended aligner for Illumina reads; Bowtie2 is also available."},
-                          }},
             "primer": {"type": "object", "additionalProperties": False, "title": "Primer trimming",
                        "description": "iVar trimming for amplicon libraries; requires the optional primer BED upload.", "properties": {
                            "enabled": {"type": "boolean", "default": False, "title": "Enable primer trimming", "description": "Trim primer-derived read ends before variant calling."},
@@ -79,14 +63,13 @@ class IlluminaLsdvPipeline(Pipeline):
                            "sliding_window": {"type": "integer", "minimum": 1, "default": 4},
                        }},
             "variant": {"type": "object", "additionalProperties": False, "title": "Variant calling",
-                        "description": "Choose the caller and filters for the haploid LSDV genome.", "properties": {
+                        "description": "Choose a caller for the haploid LSDV genome.", "properties": {
                             "tool": {"type": "string", "enum": ["bcftools", "lofreq", "freebayes"], "default": "bcftools",
                                      "title": "Variant caller", "description": "bcftools is the default; LoFreq and FreeBayes are available alternatives."},
-                            "filter": {"type": "string", "default": "QUAL > 20 && INFO/DP > 10"},
                             "ploidy": {"type": "integer", "minimum": 1, "maximum": 2, "default": 1},
                         }},
             "consensus": {"type": "object", "additionalProperties": False, "title": "Consensus sequence",
-                          "description": "Consensus is generated from the filtered variants with bcftools.", "properties": {
+                          "description": "Consensus is generated from the caller VCF with bcftools.", "properties": {
                               "enabled": {"type": "boolean", "default": True},
                           }},
             "visualization": {"type": "object", "additionalProperties": False, "title": "Variant visualization",
@@ -121,7 +104,7 @@ class IlluminaLsdvPipeline(Pipeline):
         for key, value in summarise(rows).items():
             ctx.metric(key, value)
 
-        ctx.artifact(called, kind="vcf", label="Filtered variants")
+        ctx.artifact(called, kind="vcf", label="Called variants")
 
         if ctx.param("visualization.enabled", True):
             with ctx.stage("visualise"):

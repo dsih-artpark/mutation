@@ -1,4 +1,4 @@
-"""Consensus FASTA generation from the filtered VCF."""
+"""Consensus FASTA generation from the caller VCF."""
 
 from __future__ import annotations
 

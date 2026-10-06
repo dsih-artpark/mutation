@@ -1,4 +1,4 @@
-"""Paired-end alignment with BWA-MEM or Bowtie2."""
+"""Paired-end alignment with BWA-MEM."""
 
 from __future__ import annotations
 
@@ -11,39 +11,22 @@ from .common import threads
 
 
 def run(ctx: RunContext, r1: Path, r2: Path, reference: Path) -> Path:
-    tool = str(ctx.param("alignment.tool", "bwa")).lower()
     bam = ctx.work_dir / "alignment.sorted.bam"
     n_threads = threads(ctx, specs.ALIGN.cpus)
 
     with ctx.stage("align"):
-        if tool == "bwa":
-            prefix = ctx.work_dir / "reference.bwa"
-            ctx.run(specs.ALIGN, ["bwa", "index", "-p", str(prefix), str(reference)])
-            ctx.run(
-                specs.ALIGN,
-                sh('bwa mem -t "$T" -R "$RG" "$IDX" "$R1" "$R2" '
-                   '| samtools sort -@ "$T" -m "$SORTMEM" -o "$BAM"'),
-                env={
-                    "T": str(n_threads), "RG": "@RG\\tID:illumina\\tSM:sample\\tPL:ILLUMINA",
-                    "IDX": str(prefix), "R1": str(r1), "R2": str(r2), "BAM": str(bam),
-                    "SORTMEM": f"{max(128, int(specs.ALIGN.memory_gb * 512 / n_threads))}M",
-                },
-            )
-        elif tool == "bowtie2":
-            prefix = ctx.work_dir / "reference.bowtie2"
-            ctx.run(specs.ALIGN, ["bowtie2-build", str(reference), str(prefix)])
-            ctx.run(
-                specs.ALIGN,
-                sh('bowtie2 -x "$IDX" -1 "$R1" -2 "$R2" -p "$T" '
-                   '| samtools sort -@ "$T" -m "$SORTMEM" -o "$BAM"'),
-                env={
-                    "T": str(n_threads), "IDX": str(prefix), "R1": str(r1), "R2": str(r2),
-                    "BAM": str(bam),
-                    "SORTMEM": f"{max(128, int(specs.ALIGN.memory_gb * 512 / n_threads))}M",
-                },
-            )
-        else:
-            raise ValueError(f"unsupported aligner: {tool}")
+        prefix = ctx.work_dir / "reference.bwa"
+        ctx.run(specs.ALIGN, ["bwa", "index", "-p", str(prefix), str(reference)])
+        ctx.run(
+            specs.ALIGN,
+            sh('bwa mem -t "$T" -R "$RG" "$IDX" "$R1" "$R2" '
+               '| samtools sort -@ "$T" -m "$SORTMEM" -o "$BAM"'),
+            env={
+                "T": str(n_threads), "RG": "@RG\\tID:illumina\\tSM:sample\\tPL:ILLUMINA",
+                "IDX": str(prefix), "R1": str(r1), "R2": str(r2), "BAM": str(bam),
+                "SORTMEM": f"{max(128, int(specs.ALIGN.memory_gb * 512 / n_threads))}M",
+            },
+        )
 
         ctx.require(bam)
         ctx.run(specs.SAMTOOLS, ["samtools", "index", str(bam)])
@@ -53,7 +36,7 @@ def run(ctx: RunContext, r1: Path, r2: Path, reference: Path) -> Path:
         ctx.artifact(ctx.work_dir / "alignment.flagstat.txt", kind="alignment", label="Alignment statistics")
         ctx.artifact(ctx.work_dir / "alignment.coverage.txt", kind="alignment", label="Coverage statistics")
 
-    ctx.metric("aligner", tool)
+    ctx.metric("aligner", "bwa")
     return bam
 
 

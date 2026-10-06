@@ -9,10 +9,10 @@ This package implements a modular, reproducible Illumina variant calling workflo
 ## 📌 Features
 
 - **Paired-End Read Processing**: Supports forward (`R1`) and reverse (`R2`) Illumina FASTQ reads (`.fastq`, `.fq`, `.fastq.gz`, `.fq.gz`).
-- **Flexible Read Quality Control**: Choice of `fastp` (auto adapter trimming + Phred/length filtering), `FastQC`, `Trimmomatic`, or combined `fastqc_trimmomatic`.
-- **Reference Alignment**: Alignment with `BWA-MEM` or `Bowtie2`, producing coordinate-sorted and indexed BAM files, `samtools flagstat`, and per-contig coverage reports.
+- **Read Quality Control**: `fastp` paired-read trimming and quality filtering.
+- **Reference Alignment**: `BWA-MEM` alignment, producing coordinate-sorted and indexed BAM files, `samtools flagstat`, and per-contig coverage reports.
 - **Optional Amplicon Primer Trimming**: `iVar trim` support using an optional primer scheme BED file.
-- **Viral Haploid Variant Calling**: Call haploid variants using `bcftools` (mpileup + call), `LoFreq`, or `FreeBayes`, filtered by QUAL and read depth (`DP`).
+- **Viral Haploid Variant Calling**: Call haploid variants using `bcftools` (mpileup + call), `LoFreq`, or `FreeBayes`; the indexed caller VCF is passed downstream.
 - **Consensus Sequence Generation**: Automated consensus FASTA creation using `bcftools consensus`.
 - **Functional Variant Annotation**: `snpEff` annotation against a custom pre-built LSDV genome database (`NC_003027.1`).
 - **Rich Interactive Visualization**: Standalone, interactive Plotly web view (`visualization.html`) with gene/CDS tracks, effect category filters, and gene zoom dropdowns.
@@ -29,8 +29,8 @@ app/pipelines/illumina_lsdv/
 ├── specs.py                   # StageSpec CPU, memory & container image definitions
 ├── manifest.yaml              # Container image specifications
 ├── common.py                  # Reference preparation & shared utilities
-├── qc.py                      # Stage: Read quality control (fastp / FastQC / Trimmomatic)
-├── align.py                   # Stage: BWA-MEM / Bowtie2 alignment
+├── qc.py                      # Stage: fastp read quality control
+├── align.py                   # Stage: BWA-MEM alignment
 ├── primer.py                  # Stage: Optional iVar primer trimming
 ├── variant.py                 # Stage: bcftools / LoFreq / FreeBayes variant calling
 ├── consensus.py               # Stage: Consensus FASTA generation
@@ -60,17 +60,14 @@ app/pipelines/illumina_lsdv/
 | --- | --- | --- | --- |
 | `threads` | integer | `4` | Number of CPU threads requested |
 | `reference` | string | `"lsdv_reference_sequence.fasta"` | Reference genome FASTA in shared data directory |
-| `qc.tool` | enum | `"fastp"` | Options: `"fastp"`, `"fastqc"`, `"trimmomatic"`, `"fastqc_trimmomatic"` |
 | `fastp.qualified_quality_phred` | integer | `20` | Minimum Phred quality score (Q20) |
 | `fastp.length_required` | integer | `50` | Minimum read length (bp) |
 | `fastp.detect_adapter_for_pe` | boolean | `true` | Auto-detect paired-end adapters |
-| `alignment.tool` | enum | `"bwa"` | Options: `"bwa"`, `"bowtie2"` |
 | `primer.enabled` | boolean | `false` | Enable `iVar` primer trimming (requires `primer_bed`) |
 | `primer.min_length` | integer | `30` | Minimum read length after primer trimming |
 | `primer.min_quality` | integer | `20` | Minimum Phred quality for sliding window |
 | `primer.sliding_window` | integer | `4` | Sliding window width (bp) |
 | `variant.tool` | enum | `"bcftools"` | Options: `"bcftools"`, `"lofreq"`, `"freebayes"` |
-| `variant.filter` | string | `"QUAL > 20 && INFO/DP > 10"` | `bcftools filter` expression |
 | `variant.ploidy` | integer | `1` | Genome ploidy (1 for haploid viral genome) |
 | `consensus.enabled` | boolean | `true` | Generate consensus FASTA sequence |
 | `visualization.enabled` | boolean | `true` | Generate interactive Plotly HTML report |
@@ -89,9 +86,9 @@ app/pipelines/illumina_lsdv/
 * `fastp.html` / `fastp.json`: QC metrics and interactive report.
 * `alignment.flagstat.txt`: `samtools flagstat` mapping statistics.
 * `alignment.coverage.txt`: Per-contig coverage breakdown.
-* `consensus.fasta`: Filtered consensus genome sequence.
+* `consensus.fasta`: Consensus genome sequence.
 * `annotated.vcf`: Functional variant annotations (`snpEff`).
-* `variants.bcftools.vcf.gz`: Compressed and indexed filtered VCF.
+* `variants.bcftools.vcf.gz`: Compressed and indexed caller VCF.
 * `visualization.html`: Interactive web page with gene tracks, zoom, effect filters, and tooltips.
 * `pipeline_report.txt`: Complete execution summary and metrics log.
 
@@ -119,10 +116,8 @@ ctx = RunContext(
     params={
         "threads": 8,
         "reference": "lsdv_reference_sequence.fasta",
-        "qc": {"tool": "fastp"},
-        "alignment": {"tool": "bwa"},
         "primer": {"enabled": False},
-        "variant": {"tool": "bcftools", "filter": "QUAL > 20 && INFO/DP > 10"},
+        "variant": {"tool": "bcftools"},
         "consensus": {"enabled": True},
         "visualization": {"enabled": True},
     },

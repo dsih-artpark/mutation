@@ -102,7 +102,7 @@ def run(ctx: RunContext, annotated_vcf: Path, rows: list[dict]) -> Path:
     if not rows:
         output.write_text(
             "<!doctype html><html><body><h2>No variants identified</h2>"
-            "<p>The filtered VCF contained no variant records.</p></body></html>\n"
+            "<p>The caller VCF contained no variant records.</p></body></html>\n"
         )
         return output
 
