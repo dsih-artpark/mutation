@@ -118,9 +118,14 @@ Each pipeline returns `params_schema` (JSON Schema, Draft 2020-12), `stages`,
 hardcode fields.** Adding a pipeline is meant to be a backend-only change, and
 hardcoding here is what breaks that property.
 
-`extra_inputs` describes secondary files (e.g. ont-lsdv's ARTIC `primer_bed`),
-each with `extensions`, `required` and a `title`/`description`. Render a file
-picker per entry and send the resulting keys in `extra_input_keys`.
+`extra_inputs` describes secondary files (e.g. ont-lsdv's `primer_bed` and
+`primer_bedpe`), each with `extensions`, `required`, `when` and a
+`title`/`description`. `when` maps parameter dot paths to the value each must
+have for the input to be in use — `{"primer.enabled": true, "primer.tool":
+"bamclipper"}` — and is `{}` for an input that is always in use. Render a file
+picker for each input in use for the current form values, treat `required` as
+applying only while it is in use, and send keys in `extra_input_keys` only for
+inputs in use: the service rejects a key for one that is not.
 
 ### 4. Status and progress
 

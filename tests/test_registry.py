@@ -168,8 +168,73 @@ def test_ont_lsdv_declares_its_primer_bed_as_an_extra_input():
     extras = registry.get("ont-lsdv").extra_inputs
     assert "primer_bed" in extras
     assert extras["primer_bed"].filename == "primers.bed"
-    assert extras["primer_bed"].required is False
+    assert extras["primer_bed"].required is True
     assert ".bed" in extras["primer_bed"].extensions
+
+
+def test_ont_lsdv_uses_each_primer_file_only_with_its_own_tool():
+    """align_trim reads a BED and BAMClipper a BEDPE, and neither notices the
+    other format -- so exactly one file is in use for any params."""
+    from app.pipelines import registry
+
+    extras = registry.get("ont-lsdv").extra_inputs
+    assert extras["primer_bedpe"].filename == "primers.bedpe"
+    assert extras["primer_bedpe"].extensions == (".bedpe",)
+
+    def in_use(params):
+        validated = registry.validate_params("ont-lsdv", params)
+        return sorted(key for key, extra in extras.items() if extra.applies(validated))
+
+    assert in_use({}) == []
+    # primer.tool left out: the default, align_trim, still decides.
+    assert in_use({"primer": {"enabled": True}}) == ["primer_bed"]
+    assert in_use({"primer": {"enabled": True, "tool": "bamclipper"}}) == ["primer_bedpe"]
+    assert in_use({"primer": {"enabled": False, "tool": "bamclipper"}}) == []
+
+
+def test_describe_publishes_when_an_extra_input_is_in_use():
+    """Dharini shows a picker only while its conditions hold."""
+    from app.pipelines import registry
+
+    described = registry.get("ont-lsdv").describe()["extra_inputs"]
+    assert described["primer_bedpe"]["when"] == {"primer.enabled": True, "primer.tool": "bamclipper"}
+
+
+def test_an_extra_input_without_conditions_is_always_in_use():
+    from app.pipelines.base import ExtraInput
+
+    assert ExtraInput(filename="x.bed", extensions=(".bed",)).applies({}) is True
+
+
+def test_a_when_naming_no_parameter_fails_the_contract():
+    """A typo'd path never holds, so the input silently stops being required."""
+    from tests.contract import _assert_extra_input_conditions
+    from app.pipelines.base import ExtraInput, Pipeline
+
+    class _Typo(Pipeline):
+        id = "typo"
+        params_schema = {
+            "type": "object", "additionalProperties": False,
+            "properties": {"primer": {
+                "type": "object", "additionalProperties": False,
+                "properties": {"tool": {"type": "string", "enum": ["a", "b"], "default": "a"}},
+            }},
+        }
+        extra_inputs = {
+            "scheme": ExtraInput(filename="s.bed", extensions=(".bed",), when={"primer.tol": "a"}),
+        }
+
+        def run(self, ctx):
+            raise NotImplementedError
+
+    with pytest.raises(AssertionError, match="names no parameter"):
+        _assert_extra_input_conditions(_Typo())
+
+    _Typo.extra_inputs = {
+        "scheme": ExtraInput(filename="s.bed", extensions=(".bed",), when={"primer.tool": "c"}),
+    }
+    with pytest.raises(AssertionError, match="is not one of"):
+        _assert_extra_input_conditions(_Typo())
 
 
 def test_a_pipeline_declaring_a_reserved_stage_fails_the_contract():

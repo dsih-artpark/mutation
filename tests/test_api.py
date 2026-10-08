@@ -226,6 +226,66 @@ def test_an_undeclared_extra_input_is_rejected(client):
     assert "declares no extra input" in response.json()["detail"]
 
 
+def submit_ont(client, params, extra_input_keys=None):
+    import uuid
+
+    return submit(
+        client, pipeline_id="ont-lsdv",
+        _key=put_object(f"uploads/{uuid.uuid4()}/reads.fastq.gz", b"\x1f\x8b\x00"),
+        input_filename="reads.fastq.gz",
+        params=params,
+        extra_input_keys=extra_input_keys or {},
+    )
+
+
+def test_a_primer_file_for_the_other_tool_is_rejected(client):
+    """BAMClipper reads a BEDPE. Handed the BED, it clips the wrong reads and
+    exits 0, so the file must never reach it."""
+    response = submit_ont(
+        client, {"primer": {"enabled": True, "tool": "bamclipper"}},
+        {"primer_bed": put_object("uploads/p/scheme.bed", b"x")},
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "primer_bed applies only when primer.enabled=true, primer.tool=align_trim" in detail
+
+
+def test_a_primer_file_is_rejected_when_trimming_is_off(client):
+    response = submit_ont(client, {}, {"primer_bed": put_object("uploads/q/scheme.bed", b"x")})
+    assert response.status_code == 422
+    assert "not used with these params" in response.json()["detail"]
+
+
+def test_the_primer_file_for_the_selected_tool_is_required(client):
+    """Previously the stage skipped itself, and the run finished untrimmed."""
+    response = submit_ont(client, {"primer": {"enabled": True, "tool": "bamclipper"}})
+    assert response.status_code == 422
+    assert "primer_bedpe (because primer.enabled=true, primer.tool=bamclipper)" in (
+        response.json()["detail"]
+    )
+
+
+def test_the_primer_file_for_the_selected_tool_is_accepted(client, monkeypatch):
+    """primer.tool is left out, so the check must see its default, align_trim."""
+    import app.tasks as tasks
+
+    monkeypatch.setattr(tasks.execute_run, "apply_async", lambda *a, **kw: None)
+
+    response = submit_ont(
+        client, {"primer": {"enabled": True}},
+        {"primer_bed": put_object("uploads/r/scheme.bed", b"x")},
+    )
+    assert response.status_code == 202, response.text
+
+
+def test_a_primer_file_with_the_wrong_extension_is_rejected(client):
+    response = submit_ont(
+        client, {"primer": {"enabled": True, "tool": "bamclipper"}},
+        {"primer_bedpe": put_object("uploads/s/scheme.bed", b"x")},
+    )
+    assert response.status_code == 422
+
+
 def test_a_missing_field_is_a_422(client):
     """external_id is required: without it there is no idempotency key."""
     assert client.post("/v1/runs", json={"pipeline_id": "test-echo"}).status_code == 422

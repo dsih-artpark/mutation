@@ -35,6 +35,7 @@ def assert_pipeline_contract(pipeline) -> None:
     _assert_params_schema(pipeline)
     _assert_stages(pipeline)
     _assert_filenames(pipeline)
+    _assert_extra_input_conditions(pipeline)
     _assert_manifest(pipeline)
 
 
@@ -112,6 +113,39 @@ def _assert_filenames(pipeline) -> None:
             f"{pipeline.id}: extra_inputs[{key!r}] declares no extensions, so the "
             f"API cannot reject the wrong file type before a run is queued"
         )
+
+
+_JSON_TYPES = {"boolean": (bool,), "integer": (int,), "number": (int, float), "string": (str,)}
+
+
+def _assert_extra_input_conditions(pipeline) -> None:
+    """Every `when` names a real parameter and a value that parameter can take.
+
+    A typo in either fails silently: the condition never holds, so the input is
+    never in use -- the API stops requiring it, rejects it whenever it is
+    supplied, and Dharini never shows its picker.
+    """
+    for key, extra in pipeline.extra_inputs.items():
+        for path, expected in extra.when.items():
+            where = f"{pipeline.id}: extra_inputs[{key!r}].when[{path!r}]"
+
+            node = pipeline.params_schema
+            for segment in path.split("."):
+                node = (node.get("properties") or {}).get(segment) if isinstance(node, dict) else None
+            assert isinstance(node, dict) and node.get("type") != "object", (
+                f"{where} names no parameter in params_schema"
+            )
+
+            accepted = _JSON_TYPES.get(node.get("type"), (object,))
+            # bool subclasses int, so True would otherwise pass as an integer.
+            assert isinstance(expected, accepted) and (
+                bool in accepted or not isinstance(expected, bool)
+            ), f"{where} = {expected!r} is not a {node.get('type')}"
+
+            if "enum" in node:
+                assert expected in node["enum"], (
+                    f"{where} = {expected!r} is not one of {node['enum']}"
+                )
 
 
 def _unpinned_assets_allowed() -> bool:

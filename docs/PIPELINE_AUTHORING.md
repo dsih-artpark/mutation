@@ -75,9 +75,10 @@ that is a sign the platform should be doing the work instead.
 
 ### `extra_inputs`: secondary files
 
-Some pipelines need more than one input — `ont-lsdv` accepts an optional
-ARTIC primer scheme alongside the FASTQ. Declare each one as an `ExtraInput`,
-keyed by the name a submission and `ctx.extra_input()` will both use:
+Some pipelines need more than one input — `ont-lsdv` accepts a primer file
+alongside the FASTQ when primer trimming is enabled. Declare each one as an
+`ExtraInput`, keyed by the name a submission and `ctx.extra_input()` will both
+use:
 
 ```python
 from app.pipelines.base import ExtraInput
@@ -87,12 +88,14 @@ extra_inputs = {
         filename="primers.bed",         # normalised on-disk name — never the
                                          # client's own filename
         extensions=(".bed",),
-        required=False,
-        title="ARTIC primer scheme",
+        required=True,
+        title="ARTIC primer scheme (BED)",
         description=(
-            "Required only when primer trimming is enabled. Contig names and "
-            "coordinates must match the reference exactly."
+            "One row per primer, in the 7-column ARTIC format that includes the "
+            "primer sequence. Contig names and coordinates must match the "
+            "reference exactly."
         ),
+        when={"primer.enabled": True, "primer.tool": "align_trim"},
     ),
 }
 ```
@@ -101,8 +104,14 @@ extra_inputs = {
 | --- | --- |
 | `filename` | The normalised on-disk name, exactly like `Pipeline.input_filename` — a client-controlled name never reaches a tool command line. |
 | `extensions` | Checked the same way `accepted_extensions` is checked for the primary input. |
-| `required` | Enforced by the API before a run is even queued: a submission missing a required extra, or naming one your pipeline never declared, is a `422`. |
+| `required` | Enforced by the API before a run is even queued, while the input is in use: a submission missing a required extra, or naming one your pipeline never declared, is a `422`. |
 | `title` / `description` | User-facing copy. Dharini renders the extra-file picker from `describe()` exactly as it renders the parameter form from `params_schema` — these are not code comments. |
+| `when` | The params that put the input in use, as dot path → required value; every condition must hold. Omit it for an input that is always in use. Evaluated against validated params, so defaults count. Supplying an input that is not in use is a `422`, and Dharini shows the picker only while the conditions hold. The contract kit checks that every path names a parameter and every value is one it can take. |
+
+Use `when` whenever a parameter decides which file a tool reads. `ont-lsdv`
+declares `primer_bed` for align_trim and `primer_bedpe` for BAMClipper: the
+formats are not interchangeable, and BAMClipper given a BED exits 0 having
+clipped the wrong reads.
 
 A submission supplies one object key per entry, under `extra_input_keys`:
 

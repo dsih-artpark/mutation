@@ -18,12 +18,12 @@ from . import align, annotate, common, consensus, primer, qc, report, variant
 
 class OntLsdvPipeline(Pipeline):
     id = "ont-lsdv"
-    version = "1.1.0"
+    version = "1.2.0"
     display_name = "Oxford Nanopore — LSDV"
     description = (
-        "Nanopore FASTQ through QC, minimap2 alignment, optional ARTIC "
-        "align_trim primer trimming, variant calling (bcftools / Medaka / "
-        "Clair3), consensus generation and snpEff annotation."
+        "Nanopore FASTQ through QC, minimap2 alignment, optional primer "
+        "trimming (ARTIC align_trim / BAMClipper), variant calling (bcftools / "
+        "Medaka / Clair3), consensus generation and snpEff annotation."
     )
 
     accepted_extensions = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
@@ -31,16 +31,35 @@ class OntLsdvPipeline(Pipeline):
 
     stages = ["prepare", "qc", "align", "primer", "variant", "consensus", "annotate", "report"]
 
+    # One input per trimming tool, because the two read different formats and
+    # neither checks what it was given: align_trim needs a BED with one row per
+    # primer, BAMClipper a BEDPE with one row per amplicon. Handed an ARTIC BED,
+    # BAMClipper 1.0.0 exits 0 having clipped the wrong reads. Each input is in
+    # use only for its own tool, so the API rejects the other one.
     extra_inputs = {
         "primer_bed": ExtraInput(
             filename="primers.bed",
             extensions=(".bed",),
-            required=False,
-            title="ARTIC primer scheme",
+            required=True,
+            title="ARTIC primer scheme (BED)",
             description=(
-                "Required only when primer trimming is enabled. Contig names and "
+                "One row per primer, in the 7-column ARTIC format that includes the "
+                "primer sequence. Contig names and coordinates must match the "
+                "reference exactly."
+            ),
+            when={"primer.enabled": True, "primer.tool": "align_trim"},
+        ),
+        "primer_bedpe": ExtraInput(
+            filename="primers.bedpe",
+            extensions=(".bedpe",),
+            required=True,
+            title="Primer pairs (BEDPE)",
+            description=(
+                "One tab-separated row per amplicon: contig, left primer start and "
+                "end, contig, right primer start and end. Contig names and "
                 "coordinates must match the reference exactly."
             ),
+            when={"primer.enabled": True, "primer.tool": "bamclipper"},
         ),
     }
 
@@ -121,14 +140,14 @@ class OntLsdvPipeline(Pipeline):
             "primer": {
                 "type": "object", "additionalProperties": False,
                 "title": "Primer trimming",
-                "description": "For amplicon runs. Needs an ARTIC primer scheme BED or BEDPE "
-                               "uploaded alongside the reads; the stage is skipped "
-                               "without one.",
+                "description": "For amplicon runs. Removes primer sequences from the "
+                               "aligned reads, using a primer file uploaded alongside "
+                               "them.",
                 "properties": {
                     "enabled": {
                         "type": "boolean", "default": False,
-                        "description": "Requires an ARTIC BED or BEDPE upload whose contig names and "
-                                       "coordinates match the reference exactly. Without "
+                        "title": "Trim primers",
+                        "description": "Needs the primer file for the selected tool. Without "
                                        "trimming, variants in primer-binding regions are "
                                        "unreliable.",
                     },
@@ -137,7 +156,9 @@ class OntLsdvPipeline(Pipeline):
                         "enum": ["align_trim", "bamclipper"],
                         "default": "align_trim",
                         "title": "Primer trimming tool",
-                        "description": "Select align_trim (ARTIC BED) or bamclipper (BEDPE).",
+                        "description": "align_trim reads an ARTIC primer scheme (BED, one row "
+                                       "per primer). BAMClipper reads primer pairs (BEDPE, one "
+                                       "row per amplicon).",
                     },
                 },
             },
