@@ -14,7 +14,7 @@ def threads(ctx: RunContext, cap: int) -> int:
 
 
 def prepare_reference(ctx: RunContext) -> Path:
-    name = str(ctx.param("reference", "lsdv_reference.fasta"))
+    name = str(ctx.param("reference", "lsdv_reference_sequence.fasta"))
     refs = Path(ctx.refs_dir).resolve()
     source = (refs / name).resolve()
     if not source.is_relative_to(refs):

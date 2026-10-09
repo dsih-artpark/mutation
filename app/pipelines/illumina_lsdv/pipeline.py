@@ -47,7 +47,7 @@ class IlluminaLsdvPipeline(Pipeline):
         "properties": {
             "threads": {"type": "integer", "minimum": 1, "maximum": 16, "default": 4,
                         "title": "Threads", "description": "Requested CPU threads, capped by each stage allocation."},
-            "reference": {"type": "string", "default": "lsdv_reference.fasta",
+            "reference": {"type": "string", "default": "lsdv_reference_sequence.fasta",
                           "title": "Reference genome", "description": "Reference FASTA filename in the shared references directory."},
             "fastp": {"type": "object", "additionalProperties": False, "title": "fastp settings",
                       "description": "Read quality and length thresholds used by fastp.", "properties": {
