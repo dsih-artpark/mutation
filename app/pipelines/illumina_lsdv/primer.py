@@ -9,7 +9,7 @@ from . import specs
 from .common import threads
 
 
-def run(ctx: RunContext, bam: Path) -> Path:
+def run(ctx: RunContext, bam: Path, reference: Path) -> Path:
     bed = ctx.extra_input("primer_bed")
     if not ctx.param("primer.enabled", False):
         ctx.skip("primer", "primer trimming is disabled")
@@ -20,11 +20,11 @@ def run(ctx: RunContext, bam: Path) -> Path:
         _record_untrimmed(ctx)
         return bam
 
-    _validate_bed(bed)
     prefix = ctx.work_dir / "primer_trim"
     raw = ctx.work_dir / "primer_trim.bam"
     sorted_bam = ctx.work_dir / "trimmed.sorted.bam"
     with ctx.stage("primer"):
+        _validate_bed(bed, reference)
         ctx.run(specs.PRIMER, [
             "ivar", "trim", "-i", str(bam), "-b", str(bed), "-p", str(prefix),
             "-m", str(ctx.param("primer.min_length", 30)),
@@ -40,7 +40,7 @@ def run(ctx: RunContext, bam: Path) -> Path:
     return sorted_bam
 
 
-def _validate_bed(path: Path) -> None:
+def _validate_bed(path: Path, reference: Path) -> None:
     rows = [line for line in path.read_text(errors="replace").splitlines()
             if line.strip() and not line.startswith(("#", "track", "browser"))]
     if not rows:
@@ -55,6 +55,27 @@ def _validate_bed(path: Path) -> None:
             raise ValueError(f"invalid primer BED coordinates: {row!r}") from exc
         if start < 0 or end <= start:
             raise ValueError(f"invalid primer BED interval: {row!r}")
+
+    _check_contigs({row.split()[0] for row in rows}, reference, "BED")
+
+
+def _check_contigs(scheme: set[str], reference: Path, kind: str) -> None:
+    fai = Path(f"{reference}.fai")
+    if not fai.exists():
+        return
+
+    contigs = {
+        line.split("\t", 1)[0]
+        for line in fai.read_text(errors="replace").splitlines()
+        if line.strip()
+    }
+
+    if not scheme & contigs:
+        raise ValueError(
+            f"primer scheme does not match the reference genome: the {kind} names "
+            f"{sorted(scheme)} but the reference contains {sorted(contigs)}. "
+            "Trimming would silently match no primers."
+        )
 
 
 def _record_untrimmed(ctx: RunContext) -> None:

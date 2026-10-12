@@ -98,7 +98,7 @@ class IlluminaLsdvPipeline(Pipeline):
 
         r1, r2 = qc.run(ctx, ctx.input_path, read2)
         bam = align.run(ctx, r1, r2, reference)
-        bam = primer.run(ctx, bam)
+        bam = primer.run(ctx, bam, reference)
         called = variant.run(ctx, bam, reference)
 
         if ctx.param("consensus.enabled", True):
@@ -116,8 +116,11 @@ class IlluminaLsdvPipeline(Pipeline):
 
         if ctx.param("visualization.enabled", True):
             with ctx.stage("visualise"):
-                chart = visualization.run(ctx, annotated, rows)
-                ctx.artifact(chart, kind="visualization", label="Variant visualization")
+                try:
+                    chart = visualization.run(ctx, annotated, rows)
+                    ctx.artifact(chart, kind="visualization", label="Variant visualization")
+                except Exception as exc:
+                    ctx.skip("visualise", f"visualisation unavailable: {exc}")
         else:
             ctx.skip("visualise", "visualization disabled")
 
