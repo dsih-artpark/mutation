@@ -20,17 +20,17 @@ class IlluminaLsdvPipeline(Pipeline):
         "snpEff annotation and an interactive report."
     )
 
-    accepted_extensions = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
+    accepted_extensions = (".fastq.gz", ".fq.gz")
     input_filename = "reads_R1.fastq.gz"
     stages = ["prepare", "qc", "align", "primer", "variant", "consensus", "annotate", "visualise", "report"]
 
     extra_inputs = {
         "read2": ExtraInput(
             filename="reads_R2.fastq.gz",
-            extensions=(".fastq", ".fq", ".fastq.gz", ".fq.gz"),
+            extensions=(".fastq.gz", ".fq.gz"),
             required=True,
             title="Reverse reads (R2)",
-            description="The paired reverse-read FASTQ file from the same Illumina sample.",
+            description="The paired reverse-read FASTQ file (.fastq.gz or .fq.gz) from the same Illumina sample.",
         ),
         "primer_bed": ExtraInput(
             filename="primers.bed",

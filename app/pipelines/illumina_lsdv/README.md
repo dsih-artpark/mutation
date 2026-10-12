@@ -8,7 +8,7 @@ This package implements a modular, reproducible Illumina variant calling workflo
 
 ## 📌 Features
 
-- **Paired-End Read Processing**: Supports forward (`R1`) and reverse (`R2`) Illumina FASTQ reads (`.fastq`, `.fq`, `.fastq.gz`, `.fq.gz`).
+- **Paired-End Read Processing**: Supports forward (`R1`) and reverse (`R2`) Illumina FASTQ reads (`.fastq.gz`, `.fq.gz`).
 - **Read Quality Control**: `fastp` paired-read trimming and quality filtering.
 - **Reference Alignment**: `BWA-MEM` alignment, producing coordinate-sorted and indexed BAM files, `samtools flagstat`, and per-contig coverage reports.
 - **Optional Amplicon Primer Trimming**: `iVar trim` support using an optional primer scheme BED file.
@@ -48,8 +48,8 @@ app/pipelines/illumina_lsdv/
 
 | Input | Key | Required? | Accepted Formats | Description |
 | --- | --- | --- | --- | --- |
-| **Primary Input** | `input_path` | **Yes** | `.fastq.gz`, `.fq.gz`, `.fastq`, `.fq` | Forward read file (`R1`) |
-| **Extra Input** | `read2` | **Yes** | `.fastq.gz`, `.fq.gz`, `.fastq`, `.fq` | Reverse paired read file (`R2`) |
+| **Primary Input** | `input_path` | **Yes** | `.fastq.gz`, `.fq.gz` | Forward read file (`R1`) |
+| **Extra Input** | `read2` | **Yes** | `.fastq.gz`, `.fq.gz` | Reverse paired read file (`R2`) |
 | **Extra Input** | `primer_bed` | Optional | `.bed` | Amplicon primer scheme BED file |
 
 ---
