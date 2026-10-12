@@ -5,13 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from ...runtime.context import RunContext
+from ...runtime.runner import sh
 from . import specs
 
 
-def run(ctx: RunContext, vcf: Path, reference: Path) -> Path:
+def run(ctx: RunContext, vcf: Path, reference: Path, bam: Path | None = None) -> Path:
     output = ctx.work_dir / "consensus.fasta"
     filtered_vcf = ctx.work_dir / "variants.for_consensus.vcf.gz"
+    mask_bed = ctx.work_dir / "low_depth_mask.bed"
     tool = str(ctx.param("variant.tool", "bcftools")).lower()
+    min_depth = int(ctx.param("consensus.min_depth", 10))
 
     custom_filter = ctx.param("consensus.filter")
     if custom_filter:
@@ -32,9 +35,23 @@ def run(ctx: RunContext, vcf: Path, reference: Path) -> Path:
         ctx.require(filtered_vcf)
         ctx.run(specs.CONSENSUS, ["bcftools", "index", "-f", str(filtered_vcf)])
 
+        consensus_argv = ["bcftools", "consensus", "-f", str(reference)]
+        if bam and bam.is_file() and min_depth > 0:
+            ctx.run(
+                specs.CONSENSUS,
+                sh('samtools depth -a -d 0 "$BAM" '
+                   '| awk -v min="$MIN_DEPTH" \'$3 < min { print $1 "\t" ($2 - 1) "\t" $2 }\' '
+                   '> "$MASK"'),
+                env={"BAM": str(bam), "MIN_DEPTH": str(min_depth), "MASK": str(mask_bed)},
+            )
+            if mask_bed.is_file() and mask_bed.stat().st_size > 0:
+                consensus_argv.extend(["-m", str(mask_bed)])
+                ctx.metric("consensus_min_depth_mask", min_depth)
+
+        consensus_argv.append(str(filtered_vcf))
         ctx.run(
             specs.CONSENSUS,
-            ["bcftools", "consensus", "-f", str(reference), str(filtered_vcf)],
+            consensus_argv,
             stdout_path=output,
         )
         ctx.require(output)

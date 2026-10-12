@@ -74,6 +74,9 @@ class IlluminaLsdvPipeline(Pipeline):
                               "min_af": {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.5,
                                          "title": "Minimum allele frequency",
                                          "description": "Allele frequency cutoff for majority consensus when using LoFreq."},
+                              "min_depth": {"type": "integer", "minimum": 0, "default": 10,
+                                            "title": "Minimum depth for consensus masking",
+                                            "description": "Positions with coverage below this threshold are masked with N."},
                               "filter": {"type": "string", "title": "Custom filter expression",
                                          "description": "Optional BCFtools filter expression override for consensus variants."},
                           }},
@@ -99,7 +102,7 @@ class IlluminaLsdvPipeline(Pipeline):
         called = variant.run(ctx, bam, reference)
 
         if ctx.param("consensus.enabled", True):
-            consensus.run(ctx, called, reference)
+            consensus.run(ctx, called, reference, bam)
         else:
             ctx.skip("consensus", "consensus generation disabled")
 

@@ -71,6 +71,7 @@ app/pipelines/illumina_lsdv/
 | `variant.ploidy` | integer | `1` | Genome ploidy (1 for haploid viral genome) |
 | `consensus.enabled` | boolean | `true` | Generate consensus FASTA sequence |
 | `consensus.min_af` | float | `0.5` | Allele frequency cutoff for majority consensus when using LoFreq |
+| `consensus.min_depth` | integer | `10` | Minimum sequencing depth threshold; bases with depth below this are masked with 'N' |
 | `consensus.filter` | string | `null` | Optional custom BCFtools filter expression override for consensus variants |
 | `visualization.enabled` | boolean | `true` | Generate interactive Plotly HTML report |
 
