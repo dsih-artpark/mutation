@@ -8,6 +8,22 @@ from ...runtime.context import RunContext
 
 
 def run(ctx: RunContext):
+    primer_trimmed = ctx.result.metrics.get("primer_trimmed")
+    if primer_trimmed:
+        primer_text = "enabled (iVar)"
+    elif ctx.param("primer.enabled", False):
+        primer_text = "skipped (no BED uploaded)"
+    else:
+        primer_text = "disabled"
+
+    consensus_stage = next((e for e in ctx.stage_log if e.get("name") == "consensus"), {})
+    if consensus_stage.get("status") == "SUCCEEDED":
+        consensus_text = "bcftools"
+    elif consensus_stage.get("status") == "SKIPPED" or not ctx.param("consensus.enabled", True):
+        consensus_text = "disabled"
+    else:
+        consensus_text = "bcftools" if ctx.param("consensus.enabled", True) else "disabled"
+
     lines = [
         "=" * 64,
         "ILLUMINA LSDV VARIANT ANALYSIS REPORT",
@@ -19,9 +35,9 @@ def run(ctx: RunContext):
         "-" * 64,
         "QC             : fastp",
         "Aligner        : bwa",
-        f"Primer trim    : {'enabled' if ctx.param('primer.enabled', False) else 'disabled'}",
+        f"Primer trim    : {primer_text}",
         f"Variant caller : {ctx.param('variant.tool', 'bcftools')}",
-        "Consensus      : bcftools",
+        f"Consensus      : {consensus_text}",
         "Annotation     : snpEff / LSDV",
         "",
         "STAGE OUTCOMES",
