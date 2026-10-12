@@ -69,8 +69,13 @@ class IlluminaLsdvPipeline(Pipeline):
                             "ploidy": {"type": "integer", "minimum": 1, "maximum": 2, "default": 1},
                         }},
             "consensus": {"type": "object", "additionalProperties": False, "title": "Consensus sequence",
-                          "description": "Consensus is generated from the caller VCF with bcftools.", "properties": {
+                          "description": "Consensus is generated from filtered caller variants with bcftools.", "properties": {
                               "enabled": {"type": "boolean", "default": True},
+                              "min_af": {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.5,
+                                         "title": "Minimum allele frequency",
+                                         "description": "Allele frequency cutoff for majority consensus when using LoFreq."},
+                              "filter": {"type": "string", "title": "Custom filter expression",
+                                         "description": "Optional BCFtools filter expression override for consensus variants."},
                           }},
             "visualization": {"type": "object", "additionalProperties": False, "title": "Variant visualization",
                               "description": "Create an interactive HTML view of annotated variants.", "properties": {

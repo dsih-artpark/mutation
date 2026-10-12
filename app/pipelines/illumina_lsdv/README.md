@@ -12,8 +12,8 @@ This package implements a modular, reproducible Illumina variant calling workflo
 - **Read Quality Control**: `fastp` paired-read trimming and quality filtering.
 - **Reference Alignment**: `BWA-MEM` alignment, producing coordinate-sorted and indexed BAM files, `samtools flagstat`, and per-contig coverage reports.
 - **Optional Amplicon Primer Trimming**: `iVar trim` support using an optional primer scheme BED file.
-- **Viral Haploid Variant Calling**: Call haploid variants using `bcftools` (mpileup + call), `LoFreq`, or `FreeBayes`; the indexed caller VCF is passed downstream.
-- **Consensus Sequence Generation**: Automated consensus FASTA creation using `bcftools consensus`.
+- **Viral Haploid Variant Calling**: Call haploid variants using `bcftools` (mpileup -d 1000 + call), `LoFreq` (SNVs + indels via `lofreq indelqual`), or `FreeBayes`; the indexed caller VCF is passed downstream.
+- **Consensus Sequence Generation**: Automated consensus FASTA creation using caller-specific filtering rules (e.g., `AF >= 0.5` for LoFreq, `QUAL >= 20 && DP >= 10` for BCFtools) before `bcftools consensus`.
 - **Functional Variant Annotation**: `snpEff` annotation against a custom pre-built LSDV genome database (`NC_003027.1`).
 - **Rich Interactive Visualization**: Standalone, interactive Plotly web view (`visualization.html`) with gene/CDS tracks, effect category filters, and gene zoom dropdowns.
 - **Execution Summary Report**: Automatically generates a structured summary text report (`pipeline_report.txt`).
@@ -70,6 +70,8 @@ app/pipelines/illumina_lsdv/
 | `variant.tool` | enum | `"bcftools"` | Options: `"bcftools"`, `"lofreq"`, `"freebayes"` |
 | `variant.ploidy` | integer | `1` | Genome ploidy (1 for haploid viral genome) |
 | `consensus.enabled` | boolean | `true` | Generate consensus FASTA sequence |
+| `consensus.min_af` | float | `0.5` | Allele frequency cutoff for majority consensus when using LoFreq |
+| `consensus.filter` | string | `null` | Optional custom BCFtools filter expression override for consensus variants |
 | `visualization.enabled` | boolean | `true` | Generate interactive Plotly HTML report |
 
 ---

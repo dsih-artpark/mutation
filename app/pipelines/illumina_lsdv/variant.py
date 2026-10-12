@@ -18,12 +18,18 @@ def run(ctx: RunContext, bam: Path, reference: Path) -> Path:
         if tool == "bcftools":
             ctx.run(
                 specs.VARIANT,
-                sh('bcftools mpileup -f "$REF" -a FORMAT/AD,FORMAT/DP "$BAM" '
+                sh('bcftools mpileup -d 1000 -f "$REF" -a FORMAT/AD,FORMAT/DP "$BAM" '
                    '| bcftools call -m -v --ploidy "$PLOIDY" -Ov -o "$OUT"'),
                 env={"REF": str(reference), "BAM": str(bam), "PLOIDY": str(ctx.param("variant.ploidy", 1)), "OUT": str(raw)},
             )
         elif tool == "lofreq":
-            ctx.run(specs.VARIANT, ["lofreq", "call", "-f", str(reference), "-o", str(raw), str(bam)])
+            indel_bam = ctx.work_dir / "lofreq.indelqual.bam"
+            ctx.run(specs.VARIANT, ["lofreq", "indelqual", "--dindel", "-f", str(reference),
+                                    "-o", str(indel_bam), str(bam)])
+            ctx.require(indel_bam)
+            ctx.run(specs.SAMTOOLS, ["samtools", "index", str(indel_bam)])
+            ctx.run(specs.VARIANT, ["lofreq", "call", "--call-indels", "-f", str(reference),
+                                    "-o", str(raw), str(indel_bam)])
         elif tool == "freebayes":
             ctx.run(specs.VARIANT, ["freebayes", "-f", str(reference), "-p",
                                     str(ctx.param("variant.ploidy", 1)), str(bam)], stdout_path=raw)
