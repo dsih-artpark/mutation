@@ -188,7 +188,7 @@ The following benchmarks demonstrate real results obtained across different tool
 | `consensus.enabled` | boolean | `true` | true / false | Enable consensus genome generation |
 | `consensus.min_af` | float | `0.5` | 0.0 – 1.0 | Minimum allele frequency cutoff for majority consensus (LoFreq) |
 | `consensus.min_depth` | integer | `10` | $\ge 0$ | Minimum depth threshold; regions below this are masked with 'N' |
-| `consensus.filter` | string | `null` | String | Custom BCFtools filter expression override for consensus variants |
+| `consensus.filter` | string | `""` | String | Custom BCFtools filter expression override for consensus variants |
 | `visualization.enabled` | boolean | `true` | true / false | Generate interactive Plotly HTML report |
 
 ---

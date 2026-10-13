@@ -77,7 +77,7 @@ class IlluminaLsdvPipeline(Pipeline):
                               "min_depth": {"type": "integer", "minimum": 0, "default": 10,
                                             "title": "Minimum depth for consensus masking",
                                             "description": "Positions with coverage below this threshold are masked with N."},
-                              "filter": {"type": "string", "title": "Custom filter expression",
+                              "filter": {"type": "string", "default": "", "title": "Custom filter expression",
                                          "description": "Optional BCFtools filter expression override for consensus variants."},
                           }},
             "visualization": {"type": "object", "additionalProperties": False, "title": "Variant visualization",

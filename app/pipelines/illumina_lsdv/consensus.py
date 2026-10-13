@@ -16,7 +16,7 @@ def run(ctx: RunContext, vcf: Path, reference: Path, bam: Path | None = None) ->
     tool = str(ctx.param("variant.tool", "bcftools")).lower()
     min_depth = int(ctx.param("consensus.min_depth", 10))
 
-    custom_filter = ctx.param("consensus.filter")
+    custom_filter = ctx.param("consensus.filter", "")
     if custom_filter:
         expr = str(custom_filter)
     elif tool == "lofreq":
