@@ -26,7 +26,7 @@ def run(ctx: RunContext, bam: Path, reference: Path) -> Path:
     with ctx.stage("primer"):
         _validate_bed(bed, reference)
         ctx.run(specs.PRIMER, [
-            "ivar", "trim", "-i", str(bam), "-b", str(bed), "-p", str(prefix),
+            "ivar", "trim", "-e", "-i", str(bam), "-b", str(bed), "-p", str(prefix),
             "-m", str(ctx.param("primer.min_length", 30)),
             "-q", str(ctx.param("primer.min_quality", 20)),
             "-s", str(ctx.param("primer.sliding_window", 4)),
