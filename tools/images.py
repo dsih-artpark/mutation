@@ -319,7 +319,9 @@ def cmd_lock(args) -> None:
     for name, (entry, _) in sorted(load_images().items()):
         ref = tagged_ref(entry)
         if entry.get("source") == "registry":
-            run(["docker", "pull", "--platform", entry.get("platform", "linux/amd64"), ref])
+            locked[name] = lock_entry(entry, remote_digest(name, ref))
+            print(f"{name} -> {locked[name]['ref']}")
+            continue
 
         # `docker inspect --format '{{index .RepoDigests 0}}'` does not degrade
         # gracefully: on an image with an empty RepoDigests list -- a build that
@@ -339,23 +341,42 @@ def cmd_lock(args) -> None:
                 f"{name}: {ref} has no repo digest. A built image must be built "
                 f"and pushed before it can be locked."
             )
-        locked[name] = {
-            "repository": entry["repository"],
-            "version": str(entry["version"]),
-            # Recorded so cmd_pull needs nothing but this file. Every image here
-            # is a single-platform manifest list, and `docker pull` without
-            # --platform resolves against the HOST architecture -- so on an
-            # arm64 developer machine it fails with "no matching manifest for
-            # linux/arm64/v8", which reads as a broken or missing image rather
-            # than a pull asking for the wrong architecture.
-            "platform": entry.get("platform", "linux/amd64"),
-            "digest": digest,
-            "ref": f"{entry['repository']}@{digest}",
-        }
+        locked[name] = lock_entry(entry, digest)
         print(f"{name} -> {locked[name]['ref']}")
 
     LOCK_PATH.write_text(json.dumps({"schema_version": 1, "images": locked}, indent=2) + "\n")
     print(f"\nwrote {LOCK_PATH}")
+
+
+def remote_digest(name: str, ref: str) -> str:
+    """Digest of a registry image, read from the registry without pulling it.
+
+    Pulling only to read a digest put every third-party image on the CI runner's
+    disk at once; Medaka alone ships libtorch, and the lock step died with "no
+    space left on device". The digest is the same one a pull would record.
+    """
+    try:
+        raw = capture(["docker", "buildx", "imagetools", "inspect", "--format", "{{json .Manifest}}", ref])
+        digest = json.loads(raw)["digest"]
+    except (subprocess.CalledProcessError, ValueError, KeyError) as exc:
+        sys.exit(f"{name}: could not resolve a digest for {ref} from the registry: {exc}")
+    return digest
+
+
+def lock_entry(entry: dict, digest: str) -> dict:
+    return {
+        "repository": entry["repository"],
+        "version": str(entry["version"]),
+        # Recorded so cmd_pull needs nothing but this file. Every image here
+        # is a single-platform manifest list, and `docker pull` without
+        # --platform resolves against the HOST architecture -- so on an
+        # arm64 developer machine it fails with "no matching manifest for
+        # linux/arm64/v8", which reads as a broken or missing image rather
+        # than a pull asking for the wrong architecture.
+        "platform": entry.get("platform", "linux/amd64"),
+        "digest": digest,
+        "ref": f"{entry['repository']}@{digest}",
+    }
 
 
 def cmd_pull(args) -> None:
