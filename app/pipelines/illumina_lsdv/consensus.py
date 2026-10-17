@@ -39,7 +39,7 @@ def run(ctx: RunContext, vcf: Path, reference: Path, bam: Path | None = None) ->
         if bam and bam.is_file() and min_depth > 0:
             ctx.run(
                 specs.CONSENSUS,
-                sh('samtools depth -a -d 0 "$BAM" '
+                sh('samtools depth -aa -J -d 0 "$BAM" '
                    '| awk -v min="$MIN_DEPTH" \'$3 < min { print $1 "\t" ($2 - 1) "\t" $2 }\' '
                    '> "$MASK"'),
                 env={"BAM": str(bam), "MIN_DEPTH": str(min_depth), "MASK": str(mask_bed)},

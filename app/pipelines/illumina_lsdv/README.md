@@ -81,8 +81,9 @@ Raw Paired FASTQ (R1 + R2)
 - **Tool**: `iVar trim` (v1.4.2) + `samtools`.
 - **Why It Matters**: In amplicon-based sequencing (e.g. 2 kbp tiled amplicon schemes), primer binding sites contain synthetic oligonucleotides that artificially introduce mismatches, inflating false-positive variant calls by over 100 variants.
 - **Functionality**:
-  - Soft-clips primer sequences from 5' and 3' read ends using an uploaded primer BED scheme (e.g. `primers-2kb.bed`).
+  - Soft-clips primer sequences from 5' and 3' read ends using an uploaded primer BED scheme (e.g. `primers-2kb.bed`). The `-e` flag is always passed so reads that do not overlap any primer are retained rather than silently discarded.
   - **Strict Contig Validation**: Compares BED chromosome names against `reference.fasta.fai`. If contig names mismatch (e.g. SARS-CoV-2 or invalid contig labels), it safely fails inside the `primer` stage with an actionable error rather than silently succeeding.
+  - **Submission-Time Validation**: `primer_bed` is a **required** upload whenever `primer.enabled = true`. The API rejects the submission before any run starts if the BED is missing — preventing the silent 155-variant-instead-of-21 outcome.
 - **Tracked Metrics**: `primer_trimmed: True` (or `False` with warning if skipped).
 
 ### 5. Haploid Viral Variant Calling (`variant` / `variant.py`)
@@ -107,7 +108,9 @@ The pipeline provides three caller options tailored to different analytical goal
   - **FreeBayes**: Filtered by `QUAL >= 20`.
   - **User Customization**: Users can override filters via `consensus.min_af` or `consensus.filter`.
 - **Low-Depth Masking (`-m`)**:
-  - Scans read depth using `samtools depth -a -d 0`.
+  - Scans read depth using `samtools depth -aa -J -d 0`.
+    - `-aa`: emits a depth row for **every** reference position, including positions with zero depth and positions not covered by any read. Without this, a sample with no mapped reads produces an empty depth file, no mask is applied, and the reference sequence is returned as a fake 100%-complete consensus.
+    - `-J`: counts reads that span a deletion gap toward depth at that position. Without this, bases covered only by deletion-spanning reads score depth 0, enter the low-depth mask, and `bcftools consensus` skips the deletion variant — replacing a real indel with `N`. LSDV field strains carry genuine deletions against the reference, so this matters.
   - Positions with depth below `consensus.min_depth` (default: **10x**) are collected into `low_depth_mask.bed`.
   - Invokes `bcftools consensus -m low_depth_mask.bed` to mask unsequenced/low-depth regions with **`N`**.
 - **Honest Completeness Metric**:
@@ -166,7 +169,7 @@ The following benchmarks demonstrate real results obtained across different tool
 | :--- | :--- | :---: | :--- | :--- |
 | **Primary Input** | `input_path` | **Yes** | `.fastq.gz`, `.fq.gz` | Forward paired-end read FASTQ file (`R1`) |
 | **Extra Input** | `read2` | **Yes** | `.fastq.gz`, `.fq.gz` | Reverse paired-end read FASTQ file (`R2`) |
-| **Extra Input** | `primer_bed` | Optional | `.bed` | Amplicon primer scheme BED file (e.g. `primers-2kb.bed`) |
+| **Extra Input** | `primer_bed` | **Required when `primer.enabled = true`** | `.bed` | Amplicon primer scheme BED file (e.g. `primers-2kb.bed`). The API rejects the submission if this is missing when primer trimming is enabled. |
 
 ---
 

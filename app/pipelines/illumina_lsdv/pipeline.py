@@ -35,9 +35,10 @@ class IlluminaLsdvPipeline(Pipeline):
         "primer_bed": ExtraInput(
             filename="primers.bed",
             extensions=(".bed",),
-            required=False,
+            required=True,
             title="Primer BED",
-            description="Optional iVar primer scheme for amplicon data; contigs must match the LSDV reference.",
+            description="iVar primer scheme for amplicon data; contigs must match the LSDV reference. Required when primer trimming is enabled.",
+            when={"primer.enabled": True},
         ),
     }
 
