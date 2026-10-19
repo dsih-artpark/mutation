@@ -1,0 +1,9 @@
+Dharini Pipeline Service (mutation)
+Copyright 2026 ARTPARK (I-Hub for Robotics and Autonomous Systems Innovation Foundation)
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product orchestrates third-party bioinformatics tools, databases and
+container images, which are NOT part of this repository and remain under their
+own licences. See THIRD_PARTY_NOTICES.md for the list, including the tools that
+are not OSI-approved open source (notably Medaka, which is optional).

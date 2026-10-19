@@ -188,7 +188,7 @@ if STORAGE_BACKEND == "s3" and not S3_BUCKET:
 
 
 # Where in the bucket this deployment lives. Empty means the bucket root;
-# "SDS004-ES_App_Data" puts every key under that folder. Configurable because a
+# "app-data" puts every key under that folder. Configurable because a
 # shared bucket is exactly the case where it differs between deployments --
 # Dharini calls the same value S3_FOLDER, and the two MUST agree or this service
 # looks for the upload somewhere Dharini never put it.
@@ -205,7 +205,7 @@ if _raw_prefix and (
 ):
     raise RuntimeError(
         f"S3_PREFIX={_raw_prefix!r} is not a plain folder path. Use something "
-        f"like 'SDS004-ES_App_Data' or leave it empty for the bucket root."
+        f"like 'app-data' or leave it empty for the bucket root."
     )
 
 S3_PREFIX = f"{_raw_prefix}/" if _raw_prefix else ""

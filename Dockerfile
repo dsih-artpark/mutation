@@ -79,6 +79,10 @@ RUN pip install --no-cache-dir -r requirements-dev.txt
 # the image carrying pytest.
 FROM base AS runtime
 
+LABEL org.opencontainers.image.title="Dharini Mutation Pipeline Service" \
+      org.opencontainers.image.description="Runs bioinformatics pipelines asynchronously and notifies Dharini by webhook." \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 COPY . /app
 
 EXPOSE 8000
