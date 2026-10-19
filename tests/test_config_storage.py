@@ -68,16 +68,16 @@ def test_no_prefix_means_the_bucket_root(monkeypatch):
 
 
 @pytest.mark.parametrize("given", [
-    "SDS004-ES_App_Data",        # as written in Dharini's S3_FOLDER
-    "/SDS004-ES_App_Data",       # leading slash: an S3 key never starts with one
-    "SDS004-ES_App_Data/",       # trailing slash, the shape most people type
-    "/SDS004-ES_App_Data/",
+    "app-data",        # as written in Dharini's S3_FOLDER
+    "/app-data",       # leading slash: an S3 key never starts with one
+    "app-data/",       # trailing slash, the shape most people type
+    "/app-data/",
 ])
 def test_a_folder_prefix_is_normalised_and_nests_both_prefixes(monkeypatch, given):
     config = _reload(monkeypatch, S3_PREFIX=given, API_KEYS="d:sk")
-    assert config.S3_PREFIX == "SDS004-ES_App_Data/"
-    assert config.S3_ALLOWED_PREFIX == "SDS004-ES_App_Data/uploads/"
-    assert config.S3_OUTPUT_PREFIX == "SDS004-ES_App_Data/runs/"
+    assert config.S3_PREFIX == "app-data/"
+    assert config.S3_ALLOWED_PREFIX == "app-data/uploads/"
+    assert config.S3_OUTPUT_PREFIX == "app-data/runs/"
 
 
 @pytest.mark.parametrize("hostile", ["a/../../b", "a\\b", "a//b", "a\nb"])
@@ -88,7 +88,7 @@ def test_a_prefix_that_is_not_a_plain_folder_path_is_rejected(monkeypatch, hosti
         _reload(monkeypatch, S3_PREFIX=hostile, API_KEYS="d:sk")
 
 
-@pytest.mark.parametrize("prefix", ["", "SDS004-ES_App_Data"])
+@pytest.mark.parametrize("prefix", ["", "app-data"])
 def test_prefixes_end_with_a_slash(monkeypatch, prefix):
     """Load-bearing: startswith("uploads") would also accept "uploadsX/evil"."""
     config = _reload(monkeypatch, S3_PREFIX=prefix, API_KEYS="d:sk")
@@ -190,6 +190,6 @@ def test_a_deployment_dotenv_cannot_reach_the_test_suite(monkeypatch, tmp_path):
 def test_a_nested_prefix_gives_the_pipeline_its_own_subfolder(monkeypatch):
     """One workload's folder inside a shared app-data folder."""
     config = _reload(monkeypatch, API_KEYS="d:sk",
-                     S3_PREFIX="SDS004-ES_App_Data/genomic-sequencing")
-    assert config.S3_ALLOWED_PREFIX == "SDS004-ES_App_Data/genomic-sequencing/uploads/"
-    assert config.S3_OUTPUT_PREFIX == "SDS004-ES_App_Data/genomic-sequencing/runs/"
+                     S3_PREFIX="app-data/genomic-sequencing")
+    assert config.S3_ALLOWED_PREFIX == "app-data/genomic-sequencing/uploads/"
+    assert config.S3_OUTPUT_PREFIX == "app-data/genomic-sequencing/runs/"

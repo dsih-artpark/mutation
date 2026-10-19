@@ -1,12 +1,10 @@
 # Builds every image declared with `source: build`, pushes it, and records the
 # resulting digests in images.lock.json.
 #
-# Called by deploy.yml rather than triggered by its own push event. That
-# ordering is load-bearing: the test suite and the deployed host both resolve
-# images through the lock, so an image must exist on the registry BEFORE either
-# looks for it. As two independent push-triggered workflows they raced, and the
-# deploy lost -- it would fail on an image the other workflow was still
-# building.
+# Run it by hand (Actions -> images -> Run workflow) on your pull-request branch
+# after changing a Dockerfile or a manifest version. It pushes with the
+# DOCKERHUB_* secrets and commits the refreshed lock to that branch. It never
+# runs on pull requests, so forks cannot reach the credentials.
 
 name: images
 
@@ -80,7 +78,7 @@ jobs:
             exit 1
           fi
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         if: steps.gate.outputs.build == 'true'
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -122,9 +120,7 @@ jobs:
             git push
           fi
 
-      # Always runs, so the caller gets a SHA whether or not a lock commit
-      # happened. deploy.yml checks this out: deploying the pre-lock commit
-      # would resolve images by tag, and REQUIRE_PINNED_IMAGES refuses that.
+      # Always runs, so a caller gets a SHA whether or not a lock commit happened.
       - name: Report the commit to deploy
         id: result
         if: always()

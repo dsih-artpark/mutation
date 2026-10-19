@@ -38,3 +38,40 @@ fixtures/
 # The upstream ONT checkout, kept in-tree for reference. Carries its own .git,
 # so an accidental `git add` would create a broken embedded repository.
 ONTPipeline/
+
+# AI-assistant and planning artefacts
+docs/superpowers/
+.superpowers/
+.claude/
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.cursor/
+.cursorrules
+.aider*
+.windsurf/
+.copilot/
+
+# Secrets (the committed template is kept)
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+
+# Local state and caches
+*.log
+*.swp
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+tmp/
+scratch/
+Thumbs.db
+
+# Internal maintainer notes (not published)
+docs/internal/

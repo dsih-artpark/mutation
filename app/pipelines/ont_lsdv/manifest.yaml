@@ -20,6 +20,8 @@ images:
   # `latest` is rejected by the manifest loader. The bioconda build carries a
   # build string in the tag, which is immutable, and it ships the model weights
   # on disk -- inference does not reach the network on first use.
+  # Licence: ONT PLC Public License v1.0, not OSI-approved. Opt-in only; see
+  # THIRD_PARTY_NOTICES.md.
   medaka:
     source: registry
     repository: quay.io/biocontainers/medaka

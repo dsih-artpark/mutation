@@ -1,15 +1,10 @@
 name: tests
 
 on:
-  # Deliberately NOT `push: branches: [main]`. deploy.yml calls this workflow
-  # on every push to main, so a push trigger here ran the entire suite twice
-  # for each merge -- two identical sets of jobs, one of which nobody reads.
-  # On main this runs as deploy's gate; on a branch it runs on the PR.
+  # No `push` trigger: publish.yml calls this workflow on main and on tags, so
+  # one would run the suite twice per merge.
   pull_request:
   workflow_dispatch:
-  # Callable so deploy.yml gates on exactly this suite rather than a copy of
-  # it. A duplicated gate drifts, and the copy that drifts is the one guarding
-  # production.
   workflow_call:
 
 jobs:

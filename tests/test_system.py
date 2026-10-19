@@ -48,17 +48,17 @@ def test_a_storage_failure_reports_the_type_and_not_the_message(client, monkeypa
     app.probe.reset()
     monkeypatch.setattr(
         app.probe, "get_store",
-        lambda: (_ for _ in ()).throw(RuntimeError("bucket dsih-secret-name key uploads/x")),
+        lambda: (_ for _ in ()).throw(RuntimeError("bucket secret-bucket-name key uploads/x")),
     )
     try:
         storage = client.get("/health").json()["storage"]
         assert storage["reachable"] is False
         assert storage["error"] == "RuntimeError"
-        assert "dsih-secret-name" not in str(storage)
+        assert "secret-bucket-name" not in str(storage)
 
         # ...and the full message IS available, behind the credential.
         detailed = client.get("/v1/system").json()["storage"]
-        assert "dsih-secret-name" in detailed["error"]
+        assert "secret-bucket-name" in detailed["error"]
     finally:
         app.probe.reset()
 

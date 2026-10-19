@@ -1,0 +1,12 @@
+# Proposes bumps for the SHA-pinned actions in .github/workflows/, so pinning
+# does not mean going stale. Review each update: these actions run with the
+# repository's Docker Hub credentials.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

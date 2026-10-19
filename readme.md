@@ -111,34 +111,27 @@ against data that plainly exists.
 ## Quick start (single host)
 
 ```bash
-sudo mkdir -p /srv/dharini/runs /srv/dharini/references
-sudo chown -R $USER /srv/dharini
-cp data/lsdv_reference_sequence.fasta /srv/dharini/references/
-
-cp .env.example .env && $EDITOR .env    # fourteen variables, all required
-docker compose up -d --build
-make images-pull                        # ~9 GB, optional but do it now
-curl localhost:8000/health
+sudo mkdir -p /srv/dharini/runs /srv/dharini/references && sudo chown -R $USER /srv/dharini
+mkdir -p /srv/dharini/service && cd /srv/dharini/service
+IMAGE=dsihartpark/dharini-mutation-pipeline; VERSION=1.0.0      # a tag from Docker Hub
+for f in compose.yaml deploy.sh; do docker run --rm $IMAGE:$VERSION cat /app/deploy/$f > $f; done
+docker run --rm $IMAGE:$VERSION cat /app/.env.example > .env && chmod +x deploy.sh
+$EDITOR .env                           # fill in the required variables
+./deploy.sh $VERSION
 ```
 
-A brand-new database needs nothing further — `init_db()` runs
-`alembic upgrade head` at API startup.
-
-**Deploying to AWS: read [Deployment (EC2)](#deployment-ec2) instead.** It has
-the instance and bucket setup and the two ways this service can be given S3
-credentials, with the trade-off between them. There is also a hard constraint on
-the instance family that is not reversible after the fact.
+Full instructions, including upgrades and rollback: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+On AWS, start with [docs/deploy-aws-ec2.md](docs/deploy-aws-ec2.md). To work on
+the code instead, see [Local development](#local-development).
 
 ---
 
 ## Access control
 
-**Authentication is currently off.** `ALLOW_UNAUTHENTICATED=true` with an empty
-`API_KEYS` is the shipped configuration, and in that state every `/v1` route
-answers anyone who can open a socket to port 8000.
-
-This is a deliberate choice to get the service live, not an oversight, and it
-has one hard consequence:
+**Authentication is on by default.** The service refuses to start unless
+`API_KEYS` is set (see [Turning it on](#turning-it-on)) or you opt out with
+`ALLOW_UNAUTHENTICATED=true`. The opt-out is for local development, and for
+deployments where the network is the only access control:
 
 > ### ⚠ The security group is the only access control
 >
@@ -146,7 +139,7 @@ has one hard consequence:
 > Elastic IP) — never `0.0.0.0/0`. With auth off, an open port is an open API:
 > anyone reaching it can submit runs, read every run's results, and choose the
 > `callback_url` the worker will later call. See
-> [Security group](#4-security-group) under Deployment for the exact rules.
+> [Security group](docs/deploy-aws-ec2.md#4-security-group) under Deployment for the exact rules.
 
 What is *not* weakened by this: **payload validation is identical either way.**
 The pipeline id must exist, `params` must satisfy that pipeline's JSON Schema,
@@ -241,9 +234,9 @@ curl -X POST localhost:8000/v1/runs \
         "pipeline_id": "ont-lsdv",
         "external_id": "dharini-job-8831",
         "owner_id": "u17",
-        "input_key": "SDS004-ES_App_Data/genomic-sequencing/uploads/u17/2f8c/reads.fastq.gz",
+        "input_key": "app-data/genomic-sequencing/uploads/u17/2f8c/reads.fastq.gz",
         "extra_input_keys": {
-          "primer_bed": "SDS004-ES_App_Data/genomic-sequencing/uploads/u17/2f8c/scheme.bed"},
+          "primer_bed": "app-data/genomic-sequencing/uploads/u17/2f8c/scheme.bed"},
         "params": {"variant": {"tool": "clair3"}, "threads": 4},
         "callback_url": "https://dharini.example.org/api/snp/webhook"
       }'
@@ -419,12 +412,12 @@ X-Dharini-Signature: sha256=<hmac>
   "artifacts": [ { "kind": "vcf", "label": "Annotated variants",
                    "filename": "annotated.vcf", "size_bytes": 48210,
                    "content_type": "text/plain",
-                   "bucket": "dsih-artpark-04-staging-data",
-                   "key": "SDS004-ES_App_Data/genomic-sequencing/runs/<run_id>/annotated.vcf" } ],
+                   "bucket": "your-bucket-name",
+                   "key": "app-data/genomic-sequencing/runs/<run_id>/annotated.vcf" } ],
   "artifacts_uploaded": true,
   "artifacts_error": null,
-  "output": { "bucket": "dsih-artpark-04-staging-data",
-              "prefix": "SDS004-ES_App_Data/genomic-sequencing/runs/<run_id>/" }
+  "output": { "bucket": "your-bucket-name",
+              "prefix": "app-data/genomic-sequencing/runs/<run_id>/" }
 }
 ```
 
@@ -442,7 +435,7 @@ original `202` was lost.
 
 `artifacts_uploaded` is `false` and `artifacts_error` is set when the run
 computed successfully but the S3 upload exhausted its retry budget (see
-[Deployment](#deployment-ec2)). The webhook still fires in that case — the run's
+[Deployment](docs/deploy-aws-ec2.md)). The webhook still fires in that case — the run's
 science is real even when the files are momentarily stranded — and
 `POST /v1/runs/{id}/reupload` is the recovery. Conversely, **the webhook is
 withheld entirely until the upload either succeeds or exhausts**: a delivery
@@ -533,784 +526,14 @@ Not enforced by this service, but the design does not hold without it:
 
 ---
 
-## Deployment (EC2)
+## Deployment
 
-One instance runs everything: the API, the Celery worker, the beat scheduler,
-Postgres and Redis, plus the per-tool containers the worker starts. The steps
-below are in dependency order — the bucket and the role have to exist before
-the service can start successfully.
+The service runs from a **published container image**; nothing is built or
+cloned on the server. `deploy.sh <version>` pulls the image and the tool images,
+restarts the stack, waits for `/health`, and rolls back if it does not come up.
 
-### 1. The instance
-
-| | |
-| --- | --- |
-| **Architecture** | **x86_64 only** — see the warning below |
-| **Type** | `m6a.xlarge` — 4 vCPU, 16 GiB, AMD EPYC |
-| **AMI** | **Ubuntu 24.04 LTS**, x86_64 |
-| **Storage** | gp3, **100 GB** to start, 3000 IOPS (the default), **encrypted** |
-| **Region** | `ap-south-1` — same as the bucket |
-
-> ### ⚠ Tick "Encrypt this volume" in the launch wizard
->
-> EBS encryption is **free** — no cost, no measurable performance difference —
-> and it is the one setting on this page that **cannot be changed in place
-> afterwards**. Turning it on later means snapshotting the volume, copying the
-> snapshot with encryption enabled, restoring it and swapping the root device,
-> on a machine that by then holds a live database.
->
-> Every FASTQ that lands in `$RUNS_ROOT`, and every consensus and VCF derived
-> from it, sits unencrypted on that volume for the whole run and for
-> `RETENTION_HOURS` afterwards. One checkbox now, or an outage later.
->
-> Set the account-wide default while you are there — EC2 → Settings → Data
-> protection and security → **Always encrypt new EBS volumes** — so the next
-> person launching an instance cannot forget.
-
-### Cost
-
-On-demand Linux in `ap-south-1`, from AWS's published price list on
-2026-08-20. Verify before committing — these move.
-
-| Instance | vCPU | RAM | USD/hr | USD/mo (730h) |
-| --- | ---: | ---: | ---: | ---: |
-| **`m6a.xlarge`** | 4 | 16 GiB | **0.1111** | **81.10** |
-| `c6a.2xlarge` | 8 | 16 GiB | 0.1870 | 136.51 |
-| `m6i.xlarge` | 4 | 16 GiB | 0.2020 | 147.46 |
-| `m5.xlarge` | 4 | 16 GiB | 0.2020 | 147.46 |
-| `m6a.2xlarge` | 8 | 32 GiB | 0.2222 | 162.21 |
-| `c6i.2xlarge` | 8 | 16 GiB | 0.3400 | 248.20 |
-
-Plus gp3 at **$0.0912 per GB-month**: $9.12 for 100 GB, $18.24 for 200 GB.
-Same-region S3 transfer is free, so the bill is essentially instance + volume.
-
-**≈ $90/month** for `m6a.xlarge` + 100 GB.
-
-**Why `m6a` and not `m6i`.** They differ in exactly one thing. Same 4 vCPU,
-same 16 GiB, same *up to* 12.5 Gbps network and 10 Gbps EBS — only the CPU
-differs: AMD EPYC (Milan) against Intel Xeon 8375C (Ice Lake). Both are
-x86_64, every tool image is `linux/amd64`, and AMD runs it natively. Nothing
-like the Graviton problem.
-
-The one real architectural difference is **AVX-512**, which Ice Lake has and
-Milan does not.
-
-`snippy-fasta` used to be a reason to prefer Intel here: the vcflib binaries in
-the Snippy image required AVX-512 and raised SIGILL on Milan. That turned out to
-be an unpinned transitive dependency rather than a real requirement, and pinning
-`vcflib=1.0.2` fixed it — see
-[`snippy-fasta` and AVX-512](#snippy-fasta-and-avx-512). Worth knowing, because
-it is exactly the shape of problem that would otherwise justify the more
-expensive instance, and it did not survive being looked at.
-
-Otherwise the question is only ever: does anything use it? Measured, rather
-than assumed — counting AVX-512 kernel symbols in the shipped binaries:
-
-| Stage | Runtime | AVX-512 kernels shipped? |
-| --- | --- | --- |
-| **`clair3`** — the **default** caller | TensorFlow 2.8 | **No** — 2 hits in a 317 MB kernel library, i.e. feature-detection strings, not code |
-| `medaka` — opt-in | PyTorch 2.3.1 | **Yes** — 3390 symbols in `libtorch_cpu.so` |
-| `bcftools` — opt-in | C / htslib | No |
-| minimap2, samtools, fastp, snpEff | SSE/AVX2, Java | No |
-| vcflib (`snippy-fasta`) | C++ | No, once pinned to 1.0.2 — 1.0.10 required it |
-
-The stock TensorFlow build targets an AVX2 baseline — it is the same build
-that prints *"rebuild TensorFlow with the appropriate compiler flags"* about
-AVX-512 on startup. **So on the default configuration, Intel's one advantage
-is unreachable and `m6i` buys nothing for 82% more money.**
-
-Only `variant.tool=medaka` could be slower on AMD, and even there PyTorch's
-AVX-512 path is typically 1.2–1.5× on AVX2, partly offset by the clock
-throttling AVX-512 causes on Ice Lake. If you switch to Medaka and it becomes
-your bottleneck, `m6i.xlarge` is the A/B test — and switching is a stop, a
-change of instance type and a start, with the volume and all data intact. Do
-not pay for it in advance.
-
-**Why 4 vCPU / 16 GiB.** The heaviest stages declare `cpus=4, memory_gb=8`
-(Medaka and Clair3; `align` is 4/6) and `WORKER_CONCURRENCY=1`, so exactly one
-runs at a time and the pipeline's own ceiling is 4 vCPU / 8 GiB. The remaining
-8 GiB carries Postgres, Redis, the API, the worker, beat, the OS and page cache
-for BAM I/O. **8 GiB total would not work**: `--memory 8g` on an 8 GiB box
-means the OOM killer arrives mid-stage, which is why `c6a.xlarge` is absent
-from the table above despite being cheaper.
-
-Scale up only on evidence. `run_stages` records real peak memory and wall time
-per stage, so after ~20 runs the [sizing query](#sizing) answers it from your
-data. `c6a.2xlarge` (8 vCPU, 16 GiB) is the upgrade if you raise
-`WORKER_CONCURRENCY` or `MAX_STAGE_CPUS`; `m6a.2xlarge` if a stage needs more
-than 8 GiB.
-
-**Why 100 GB, and why start there.** About 9 GB of tool images, then run
-scratch — the part that surprises people. A 2 GB compressed FASTQ decompresses
-to roughly 5 GB and passes through SAM and sorted-BAM intermediates several GB
-each before `work/` is deleted; one large run can transiently want 30–50 GB.
-Local artifacts are swept after `RETENTION_HOURS` (6) and S3 holds the durable
-copy, so this is sized for transient peak, not accumulation.
-
-**gp3 grows online but never shrinks**, so starting at 100 GB and expanding
-costs nothing but a `resize2fs`, while starting at 200 GB commits $9/month
-forever. Go straight to 200 GB only if production FASTQs will be multi-GB from
-the start.
-
-**Two levers if this needs to be cheaper.** A staging box used ten hours a day
-on weekdays is ~220 hours, not 730 — stopping it out of hours takes compute to
-roughly $24/month, though the volume still bills and the API is unreachable
-while it is down, so Dharini cannot submit. And a one-year Compute Savings
-Plan takes 20–30% off once usage has settled; it is not a commitment worth
-making in week one.
-
-> ### ⚠ Do not use Graviton (`m7g`, `c7g`, `t4g`, …)
->
-> Every tool image is `linux/amd64`. On arm64 they run under emulation, and
-> the vcflib binaries in the Snippy image die with SIGILL under it — exactly
-> the failure documented under
-> [`snippy-fasta` and AVX-512](#snippy-fasta-and-avx-512). `snippy-fasta`
-> would be broken on arrival and could not be fixed from this side.
-> The instance family is not a reversible decision once data is on the volume.
-
-Also avoid the burstable T-family. Genomics pins CPU for minutes at a time; if
-the CPU burst-capacity metric trends to zero you are being throttled and every
-run gets slower without anything reporting an error.
-
-**Why 24.04 LTS and not 26.04.** 24.04 is supported to 2029, which outlasts any
-horizon this decision needs to survive, and Docker's apt repository has carried
-packages for it for two years. 26.04 is four months old; a `.0` LTS is the one
-release where third-party repositories and kernel-adjacent tooling are still
-catching up, and Docker is exactly that kind of dependency.
-
-The deciding point is that **none of what is newer in 26.04 reaches this
-workload.** Every bioinformatics tool ships its own userspace inside its own
-container, pinned by digest — the host contributes a kernel and a Docker
-daemon and nothing else. A newer distro buys newer libraries that no stage will
-ever link against. Take the boring one.
-
-### 2. The S3 bucket
-
-One bucket, one folder, two prefixes under it:
-
-```text
-<S3_BUCKET>/<S3_PREFIX>/uploads/…          Dharini writes, this service reads
-<S3_BUCKET>/<S3_PREFIX>/runs/<run_id>/…    this service writes, Dharini reads
-```
-
-`S3_PREFIX` is the folder this deployment owns — a shared bucket is exactly the
-case where it differs between deployments, so it is configuration.
-**It must equal Dharini's `S3_FOLDER` exactly**, or this service looks for the
-upload somewhere Dharini never put it.
-
-The `uploads/` and `runs/` leaf names are **constants in `app/config.py`, not
-settings** — they are mirrored in the IAM policy below, and renaming one without
-the other produces `AccessDenied` with nothing in the error saying why.
-`GET /health` reports both effective prefixes so a mismatch is at least visible.
-
-```bash
-BUCKET=dsih-artpark-04-staging-data
-PREFIX=SDS004-ES_App_Data
-REGION=ap-south-1             # same region as the instance
-
-# Only if the bucket does not already exist. The staging bucket above is
-# shared with other workloads and predates this service -- in that case skip
-# straight to the policy in step 3, and change nothing about the bucket
-# itself. Its settings are not this deployment's to flip.
-aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
-  --create-bucket-configuration LocationConstraint="$REGION"
-
-# Nothing this service writes is ever public. Results reach users through
-# presigned GETs that Dharini mints.
-aws s3api put-public-access-block --bucket "$BUCKET" \
-  --public-access-block-configuration \
-  "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
-```
-
-Versioning and lifecycle rules are deliberately **not** enabled — see
-[Versioning and lifecycle](#versioning-and-lifecycle-both-off-deliberately)
-for why that is safe here and what would change it.
-
-### 3. How the instance reaches S3
-
-**Two ways, and the code takes either.** `.env` credentials if you set them,
-boto3's own credential chain if you leave them empty. Same image, same
-`app/storage.py`, no build-time switch.
-
-| | `.env` credentials | Instance role |
-| --- | --- | --- |
-| Setup | paste two values | policy + role + instance profile + hop limit |
-| Works locally | **yes**, identically | no — needs a role to assume |
-| Rotation | manual | automatic, hourly |
-| If leaked | valid from anywhere until revoked | bound to the instance |
-
-**Start with `.env` credentials.** The setup is two lines, local development
-against real S3 becomes trivial, and — this is the part that actually matters —
-**the blast radius is set by the policy, not by where the credential lives.**
-The policy below grants `GetObject` on `uploads/*` and `PutObject` on `runs/*`
-in one bucket. A leak of that is a handful of object reads by exact key, with
-no ability to list the bucket, read back results, or delete anything.
-
-> The mistake to avoid is not the static key. It is widening the policy to
-> `s3:*` because a user credential made it easy to. Keep it exactly as narrow
-> as the role version below and the difference between the two shrinks to
-> rotation.
-
-Move to an instance role later if you want the rotation, or sooner if this
-bucket ever holds anything you would not want read. Nothing in the code has to
-change — empty the two variables and restart.
-
-#### a. The policy
-
-Save as `policy.json`, substituting your bucket. **This is the same policy
-either way** — attach it to an IAM user for the `.env` path, or to a role for
-the instance-profile path:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    { "Sid": "ReadInputs",
-      "Effect": "Allow",
-      "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::dsih-artpark-04-staging-data/SDS004-ES_App_Data/genomic-sequencing/uploads/*" },
-    { "Sid": "WriteResults",
-      "Effect": "Allow",
-      "Action": "s3:PutObject",
-      "Resource": "arn:aws:s3:::dsih-artpark-04-staging-data/SDS004-ES_App_Data/genomic-sequencing/runs/*" }
-  ]
-}
-```
-
-That is the **whole** policy — no `s3:ListBucket`, no `s3:DeleteObject`, no
-`s3:GetObject` on `runs/*`, no wildcards. This service can read the one object
-it was told about, by exact key, and create objects under a run-scoped prefix.
-It cannot enumerate the bucket, cannot read back another run's results, and
-cannot destroy anything.
-
-#### b. Option 1 — credentials in `.env` (start here)
-
-```bash
-aws iam create-policy --policy-name dharini-pipeline-s3 \
-  --policy-document file://policy.json           # note the returned ARN
-
-# No console access, no other policy, no group.
-aws iam create-user --user-name dharini-pipeline
-aws iam attach-user-policy --user-name dharini-pipeline \
-  --policy-arn arn:aws:iam::<account-id>:policy/dharini-pipeline-s3
-
-aws iam create-access-key --user-name dharini-pipeline
-```
-
-The secret is shown **once**. Put both values straight into `.env`:
-
-```bash
-AWS_ACCESS_KEY_ID=AKIA…
-AWS_SECRET_ACCESS_KEY=…
-```
-
-⚠ **Set both or neither.** Two empty `AWS_*` variables is a *valid* state
-meaning "use the instance role", so a `.env` that names them anything else --
-Dharini spells them `S3_ACCESSKEYID` / `S3_SECRETACCESSKEY` -- starts cleanly
-and then fails at the first S3 call with `NoCredentialsError`, which reads like
-a broken role rather than a misspelled variable. Use the names above.
-
-Set **both or neither**. One alone is refused at startup, because boto3 ignores
-a lone `aws_access_key_id` and falls through to its chain — the process would
-come up looking configured while reaching for whatever else the host offers.
-
-`.env` is in `.gitignore` and must stay there. The realistic leak path is not
-the server, it is a screenshot, a Slack paste or a copied file — so treat these
-like a password, and rotate on anyone's offboarding
-(`aws iam create-access-key`, deploy, then delete the old one).
-
-#### c. Option 2 — an instance role (no keys at all)
-
-Leave `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` empty and attach a role.
-The metadata service then hands boto3 short-lived, auto-rotating credentials
-through its default chain.
-
-```bash
-aws iam create-role --role-name dharini-pipeline \
-  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{
-    "Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},
-    "Action":"sts:AssumeRole"}]}'
-
-aws iam attach-role-policy --role-name dharini-pipeline \
-  --policy-arn arn:aws:iam::<account-id>:policy/dharini-pipeline-s3
-
-aws iam create-instance-profile --instance-profile-name dharini-pipeline
-aws iam add-role-to-instance-profile \
-  --instance-profile-name dharini-pipeline --role-name dharini-pipeline
-
-aws ec2 associate-iam-instance-profile --instance-id i-… \
-  --iam-instance-profile Name=dharini-pipeline
-```
-
-> **⚠ Then raise the metadata hop limit to 2:**
->
-> ```bash
-> aws ec2 modify-instance-metadata-options --instance-id i-… \
->   --http-tokens required --http-put-response-hop-limit 2
-> ```
->
-> This step is only needed on the role path, and it is the one that silently
-> breaks everything if you skip it. The API and worker run *in containers*, on
-> Docker's bridge network. A packet from inside a container to
-> `169.254.169.254` is NAT'd by the host, which decrements its TTL — and
-> IMDSv2's default response hop limit of **1** drops it. The result:
-> credentials resolve perfectly when you `curl` the metadata endpoint from the
-> EC2 shell, and fail with `NoCredentialsError` inside the container that
-> actually needs them. Everything looks configured and nothing works. (This is
-> the same reason ECS sets the hop limit to 2 for you.)
->
-> **Avoiding this is a real argument for option 1.**
-
-#### d. Verify — from inside the container, not from the host
-
-```bash
-curl -s localhost:8000/health | jq .storage
-# {
-#   "backend": "s3",
-#   "bucket": "dsih-artpark-04-staging-data",
-#   "input_prefix":  "SDS004-ES_App_Data/genomic-sequencing/uploads/",
-#   "output_prefix": "SDS004-ES_App_Data/genomic-sequencing/runs/",
-#   "reachable": true
-# }
-```
-
-`reachable: true` means this process resolved credentials and completed a real
-`HeadObject` against your bucket. If it is `false`, the `error` field beside it
-names the exception, and this says which half is wrong:
-
-```bash
-docker compose exec api python -c \
-  "import botocore.session as s; print(s.get_session().get_credentials().method)"
-# env-var / shared-credentials-file → .env reached the container. Blame the policy.
-# iam-role                          → the role reached the container. Blame the policy.
-# None / traceback                  → no credential at all: a typo in .env, or
-#                                     the hop limit on the role path.
-```
-
-#### e. Add a VPC gateway endpoint for S3
-
-Optional, and worth doing anyway. Note the bucket is shared with other
-workloads, so the endpoint benefits them too:
-
-```bash
-aws ec2 create-vpc-endpoint --vpc-id vpc-… \
-  --service-name com.amazonaws.$REGION.s3 --route-table-ids rtb-…
-```
-
-Gateway endpoints are free and keep S3 traffic off the NAT gateway, which bills
-per GB processed. With multi-GB FASTQs in and BAMs out that is a real line item,
-and it also means the transfer never traverses the public internet.
-
-#### f. Know what a wrong policy looks like
-
-Without `s3:ListBucket`, S3 answers a HEAD on a key you cannot read with
-`403 AccessDenied` rather than `404 NoSuchKey`, and `app/storage.py`
-deliberately treats both as absence — that conflation is what turns a typo'd key
-into a clean `422` instead of a `500`. The cost is that a **misconfigured
-policy is indistinguishable from a typo**: if every submission comes back
-`422 … does not exist` for keys you can see in the console, check three things
-before you go looking at Dharini — `curl -s localhost:8000/health | jq .storage`
-prints all of them:
-
-1. the bucket name in the policy;
-2. `S3_PREFIX` here versus `S3_FOLDER` in Dharini — they must be identical;
-3. that the policy's `Resource` includes the prefix, not just `uploads/*`.
-
-### 4. Security group
-
-**Authentication is off** (see [Access control](#access-control)), so this is
-the only thing standing between the API and the internet.
-
-| Direction | Port | Source / destination |
-| --- | --- | --- |
-| Inbound | 8000 | **Dharini's security group** — or its Elastic IP as `x.x.x.x/32`. Never `0.0.0.0/0`. |
-| Inbound | 22 | Your office IP only — or omit it entirely and use SSM Session Manager |
-| Outbound | 443 | S3, Docker Hub, and the callback to Dharini |
-
-Nothing else. Postgres and Redis are reachable only over the compose network
-and publish no host ports; only `api` maps `8000:8000`.
-
-### 5. Host setup
-
-```bash
-curl -fsSL https://get.docker.com | sudo sh      # engine + compose v2
-sudo apt-get install -y make git                 # not on a minimal cloud image
-sudo usermod -aG docker $USER && newgrp docker
-sudo systemctl enable --now docker               # survives reboot
-
-sudo mkdir -p /srv/dharini/runs /srv/dharini/references
-sudo chown -R $USER /srv/dharini
-```
-
-`make` is only used for the `images-*` targets, which run inside this repo's
-own dev container. If you would rather not install it, `make images-pull` is:
-
-```bash
-docker compose run --rm --build --no-deps dev python tools/images.py pull
-```
-
-Every service sets `restart: unless-stopped`, so enabling the Docker service is
-the whole reboot story — there is no systemd unit to write.
-
-### 6. Configure and start
-
-```bash
-git clone <this repo> /srv/dharini/app && cd /srv/dharini/app
-cp data/lsdv_reference_sequence.fasta /srv/dharini/references/
-
-cp .env.example .env && ${EDITOR:-nano} .env
-```
-
-`.env.example` is a checklist, not a catalogue: **fourteen variables, all of
-which must be set.** Anything not in it has a working default in
-`app/config.py`. The ones that need a real value from you:
-
-| Variable | Value |
-| --- | --- |
-| `S3_BUCKET`, `S3_REGION` | from step 2 |
-| `S3_PREFIX` | the folder inside the bucket. **Must equal Dharini's `S3_FOLDER`** |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | from step 3b. **Both or neither** — leave both empty on the instance-role path |
-| `DOCKER_GID` | `getent group docker \| cut -d: -f3` |
-| `POSTGRES_PASSWORD` | anything; it never leaves the compose network |
-| `WEBHOOK_SECRET` | `openssl rand -hex 32` — **must match Dharini's copy byte for byte** |
-| `WEBHOOK_ALLOWED_HOSTS` | Dharini's hostname. Set it: a callback URL is client-supplied, and without an allowlist the worker can be aimed at internal services |
-| `PUBLIC_BASE_URL` | this instance's URL, used only to build artifact links |
-| `RUNS_ROOT`, `REFS_ROOT` | `/srv/dharini/runs`, `/srv/dharini/references` — absolute, and mounted at the identical path inside the containers ([path parity](#-path-parity)) |
-| `REQUIRE_PINNED_IMAGES` | `true`. Every image resolves to a `@sha256:` digest, and the service refuses to start if one would resolve to a mutable tag |
-| `ALLOW_UNAUTHENTICATED`, `API_KEYS` | leave as shipped (`true`, empty) — see [Access control](#access-control) |
-
-Then:
-
-```bash
-docker compose up -d --build
-make images-pull        # ~9 GB across six images
-```
-
-`images-pull` is optional — anything missing is pulled on demand — but doing it
-now means the first real submission does not appear to hang for ten minutes.
-A fresh database needs nothing further: `init_db()` runs `alembic upgrade head`
-at API startup.
-
-### 7. Verify
-
-```bash
-curl -s localhost:8000/health | jq
-```
-
-Four things in that response have to be right before you tell Dharini to point
-at this host: `status: "ok"`, `storage.reachable: true`, `pipelines: 2`, and a
-non-null `schema_revision`. Then, from Dharini's host rather than this one:
-
-```bash
-curl -s http://<instance>:8000/v1/pipelines | jq '.[].id'
-```
-
-If that times out from Dharini but works locally, it is the security group.
-
-### Updating a running deployment
-
-By hand:
-
-```bash
-cd /srv/dharini/app && git pull
-docker compose up -d --build     # migrations run at API startup
-make images-pull                 # only if images.lock.json changed
-```
-
-Rebuilding does not touch `/srv/dharini/runs` or the Postgres volume. A run
-executing when you restart the worker is lost and has to be resubmitted —
-`external_id` makes that safe, since a resubmit reaching a still-live run
-returns the original rather than starting a second one.
-
-Or let CI do it, below.
-
-### Continuous integration
-
-Three workflows, and only **one fires per event** — there is no path where the
-suite runs twice.
-
-| Workflow | Fires on | Contains |
-| --- | --- | --- |
-| `tests.yml` | pull requests; called by `deploy` | `test`, `snippy-fasta`, `production-image` |
-| `images.yml` | called by `deploy`; manual dispatch | build → push → lock → commit |
-| `deploy.yml` | pushes to `main`; manual dispatch | `images` → `test` → `deploy` |
-
-**On a PR:** `tests.yml` alone. **On a merge:** `deploy.yml` alone, which calls
-the other two as jobs. Neither `tests.yml` nor `images.yml` has a `push`
-trigger, which is what stops the duplication — previously a merge ran the full
-suite twice, once standalone and once inside the deploy.
-
-**The chain is ordered, not parallel, and that matters.** Everything downstream
-resolves images through `images.lock.json`: the suite pulls what a manifest
-declares, and the host refuses to start on an unpinned tag
-(`REQUIRE_PINNED_IMAGES`). As two independent push-triggered workflows they
-raced, and the deploy lost — failing on an image the other workflow was still
-building. Now nothing looks for an image before it is published.
-
-`images.yml` skips itself unless a Dockerfile or manifest changed, **or the
-lock is stale** — meaning a manifest declares a version the lock has no digest
-for, which is exactly what a version bump leaves behind. Most deploys pay
-nothing for the step. It also reports the commit it leaves `main` on, because
-if it refreshed the lock, that commit is the only one whose
-`images.lock.json` matches the manifests.
-
-### Continuous deployment
-
-`.github/workflows/deploy.yml` runs the full suite, then deploys to this host
-from a **self-hosted runner installed on the host itself**.
-
-**Why a self-hosted runner and not SSH from a hosted one.** The runner polls
-GitHub outbound, so port 22 need not be open to the internet at all, and no
-long-lived SSH private key sits in GitHub secrets. Those are exactly the two
-things the SSH approach would have required.
-
-> ### ⚠ Two conditions this depends on
->
-> **The repository must stay private.** A self-hosted runner on a public
-> repository executes code from fork pull requests on your server. The
-> workflow never triggers on `pull_request` for that reason, but the
-> repository setting is the control that actually matters.
->
-> **Anyone who can push to `main` can run commands as a user in the `docker`
-> group**, which is root-equivalent on this host.
->
-> Branch protection would normally fence that, but **it is unavailable on a
-> private repository on GitHub Free** — both classic protection and rulesets
-> return `403 Upgrade to GitHub Pro`. So on this plan the control is simply
-> the push-access list. That is defensible for a single maintainer, and stops
-> being defensible the moment a collaborator is added or this stops being
-> staging. Keep 2FA on the account that holds push access, and revisit before
-> either of those changes.
-
-#### Installing the runner
-
-On the EC2 host, as the same user that owns `/srv/dharini/app` — it inherits
-that user's deploy key, which is what lets the deploy step fetch:
-
-```bash
-mkdir -p ~/actions-runner && cd ~/actions-runner
-
-# linux-x64. The repository's "New self-hosted runner" page defaults to
-# whichever OS GitHub thinks you are on, and the macOS tarball installs
-# perfectly happily here -- then fails at config.sh with
-# "cannot execute binary file: Exec format error", because Runner.Listener is
-# a Mach-O binary. Read the URL before running it.
-#
-# There is no version-agnostic download: every asset name embeds the version,
-# so `releases/latest/download/actions-runner-linux-x64.tar.gz` is a 404.
-VERSION=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest \
-          | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-curl -fsSL -o runner.tar.gz \
-  "https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-linux-x64-${VERSION}.tar.gz"
-tar xzf runner.tar.gz
-
-# libicu and friends. Absent from a minimal Ubuntu cloud image, and .NET does
-# not start without them.
-sudo ./bin/installdependencies.sh
-```
-
-Then get a registration token from **Settings → Actions → Runners → New
-self-hosted runner** on the repository, and:
-
-```bash
-./config.sh --url https://github.com/<owner>/<repo> --token <TOKEN> \
-            --name dharini-ec2 --labels dharini --unattended
-
-sudo ./svc.sh install $USER      # run as this user, not root
-sudo ./svc.sh start
-sudo ./svc.sh status
-```
-
-The **`dharini` label is load-bearing** — the workflow targets
-`runs-on: [self-hosted, dharini]`, so a runner without it is never selected
-and the job queues forever. `jq` and `make` must be installed; they are in the
-[host setup](#5-host-setup) step above.
-
-#### What a deploy does
-
-1. Runs the whole of `tests.yml`, including the `snippy-fasta` end-to-end run
-   that no developer machine can execute. Slow, and the right thing to be slow
-   about.
-2. Records the currently deployed SHA, for rollback.
-3. Fetches and checks out the target — resolved through `origin/` first,
-   because `git checkout main` on a host that has fetched but never merged
-   checks out the *local* `main` and reports a successful deploy that changed
-   nothing.
-4. Pulls tool images only if `images.lock.json` moved. Digests are pinned, so
-   a new image reaches the host only when pulled — and most deploys skip the
-   ~9 GB.
-5. `docker compose up -d --build`, then polls `/health` for up to five
-   minutes, requiring `status: ok`, `storage.reachable: true` and a non-null
-   `schema_revision`.
-6. **On any failure, restores the previous SHA and rebuilds.**
-
-`concurrency: deploy-production` with `cancel-in-progress: false` means never
-two deploys at once and never a cancelled one — a job killed between
-`git checkout` and `docker compose up` leaves the host on code no commit
-describes.
-
-> **Rollback restores the code, not the schema.** `init_db()` runs
-> `alembic upgrade head` at API startup and there is no automatic downgrade, so
-> a deploy that migrated and *then* failed leaves the schema ahead of the
-> restored code. The workflow says so in its output rather than implying a
-> clean revert. Compare `schema_revision` on `/health` against what the
-> restored code expects, and decide deliberately.
-
-#### Deploying
-
-Merging to `main` deploys. To deploy something else, use **Actions → deploy →
-Run workflow** and pick the branch — leave the `ref` input empty and it
-deploys the branch you dispatched from, which is also the branch the tests ran
-against. Filling it in with a different ref means testing one thing and
-deploying another, which is occasionally what you want and never what you want
-by accident.
-
-### Versioning and lifecycle: both off, deliberately
-
-Neither is enabled, and for this write pattern that is a defensible choice
-rather than a deferred chore. Recorded here so the reasoning survives, and so
-the day one of them starts to matter is recognisable.
-
-**Why an overwrite is effectively unreachable.** Every artifact key is
-`<prefix>/runs/<run_id>/<filename>`, and `run_id` is a UUID4, so two different
-runs cannot collide. The only paths that write a key twice are an upload retry
-after a partial failure and `POST /v1/runs/{id}/reupload` — and both rewrite
-the *same* bytes. There is no sequence in this service where a `PutObject`
-destroys a result you wanted.
-
-That is narrower than the general rule. `PutObject` on an existing key *is* an
-overwrite and IAM cannot express "create but never replace", so the policy does
-technically permit a clobber; what makes it safe here is the UUID in the key,
-not the permission. **Two changes would break that assumption:**
-
-- writing to a key derived from anything client-supplied — `external_id`, a
-  filename, an owner id — instead of `run_id`;
-- pointing a second deployment (staging *and* production, say) at the same
-  bucket **and** the same `S3_PREFIX`.
-
-Turn versioning on before either. Retrofitting it does not recover anything
-already overwritten.
-
-**Storage grows without bound until something deletes.** No lifecycle rule
-means `uploads/` and `runs/` accumulate forever. Local disk is unaffected —
-`RETENTION_HOURS` (default 6) sweeps `$RUNS_ROOT` regardless, see
-[Storage](#storage) — so this is an S3 bill, not a disk-full outage.
-
-⚠ **Whatever eventually does the deleting, it cannot be this service.** The IAM
-policy grants no `s3:DeleteObject` on purpose, and that is worth keeping: a
-compute host that can erase its own outputs is one bug away from erasing
-someone else's. The three places that work instead:
-
-1. **An S3 lifecycle rule** — no code, no credential, and the reason the
-   original design leaned on it. `uploads/` can expire aggressively (an input
-   is consumed within minutes of submission), `runs/` on whatever retention
-   the science needs.
-2. **Dharini**, which already holds `GetObject` on `runs/*` and knows which
-   results a user has discarded.
-3. **A separate job with its own credential**, if deletion needs logic richer
-   than an age threshold.
-
-If you later add versioning *and* a lifecycle rule, the rule needs a
-**noncurrent-version-expiration** clause — every retried `PutObject` leaves a
-noncurrent version behind, and a rule that expires only the current version
-never reclaims it. Read the configuration back after applying it; the happy
-path passing proves nothing about the clause being present.
-
-### Database migrations
-
-`init_db()` runs `alembic upgrade head` automatically at API startup, so a
-**fresh** database needs no manual step. A database this service already
-created before Alembic was adopted (with SQLAlchemy's `create_all()`) needs
-one step, once, before the first deploy of this version:
-
-```bash
-make stamp     # records "head" WITHOUT running any DDL
-```
-
-Skip it and Alembic tries to `CREATE TABLE` over tables that already exist,
-and fails loudly rather than silently — but it is still a deploy-day surprise
-worth avoiding by doing this first. From then on:
-
-```bash
-make migrate            # bring a database to head by hand
-make migration m="…"    # generate a new revision after changing app/models.py
-```
-
-`GET /health` reports `schema_revision`, precisely so "the migration didn't
-run" and "the code is newer than the schema" don't look identical from
-outside.
-
-### `/health` and `/v1/system`
-
-Two endpoints, split by who can reach them.
-
-**`GET /health` — unauthenticated, and carries nothing that helps a caller
-aim.** This is the route that ends up exposed: load-balancer target groups,
-uptime monitors and container probes all hit it, and it is the first thing
-anyone opens to the world.
-
-```json
-{
-  "status": "ok", "pipelines": 2, "worker_concurrency": 1,
-  "schema_revision": "0002",
-  "storage": {"backend": "s3", "reachable": true},
-  "disk": {"free_gb": 81.4, "total_gb": 102.9, "used_percent": 20.9}
-}
-```
-
-Always `200` while the process is up. Storage being unreachable is reported in
-the body rather than failing the check: taking every instance out of rotation
-because S3 blipped turns a degradation into an outage. This is what tells "the
-process is dead" apart from "the process is fine but cannot reach S3" apart
-from "the schema is behind the code" — three failure modes that otherwise look
-identical from outside, at 2am, on a run that has been computing for forty
-minutes.
-
-On failure `storage.error` is the exception **type** and nothing more
-(`NoCredentialsError`, `EndpointConnectionError`, `ClientError`). Those already
-separate the failure modes worth acting on, while the message would hand an
-unauthenticated caller the bucket name, the key and sometimes the account id.
-
-**`GET /v1/system` — behind the credential, and carries the detail.**
-
-```bash
-curl -s localhost:8000/v1/system | jq
-```
-
-```jsonc
-{
-  "schema_revision": "0002",
-  "storage": {
-    "backend": "s3", "bucket": "dsih-artpark-04-staging-data",
-    "input_prefix":  "SDS004-ES_App_Data/genomic-sequencing/uploads/",
-    "output_prefix": "SDS004-ES_App_Data/genomic-sequencing/runs/",
-    "reachable": true, "error": null      // full message, not just the type
-  },
-  "pipelines": [
-    { "id": "ont-lsdv", "version": "1.1.0",
-      "stages": ["fetch", "prepare", …, "publish"],
-      "images": ["hkubal/clair3@sha256:57cf5d20…",
-                 "quay.io/biocontainers/medaka@sha256:…",
-                 "dsihartpark/dharini-ont-core@sha256:314f8675…"] }
-  ],
-  "limits": { "worker_concurrency": 1, "max_input_bytes": 5368709120,
-              "local_retention_hours": 6, "require_pinned_images": true }
-}
-```
-
-The prefixes are here because a prefix that disagrees with Dharini's
-`S3_FOLDER` fails as *"object does not exist"* — indistinguishable from a
-typo'd key, since the service cannot list the bucket. Printing what it is
-actually looking under is what separates the two.
-
-`images` is the **resolved digest** for every image each pipeline will run, so
-"which build of Medaka produced this result" has an answer months later. That
-is the question a variant call is worth nothing without.
-
-> **There is deliberately no "is this image pulled" field.** Answering it means
-> talking to the Docker daemon, and the API container does not mount the socket
-> — only the worker does, because that socket is root-equivalent access to the
-> host. Mounting it here to satisfy a status page would trade a real security
-> boundary for a convenience. `make images-list` on the host answers it.
+- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — install, configure, upgrade, roll back, and run migrations on any Docker host.
+- **[docs/deploy-aws-ec2.md](docs/deploy-aws-ec2.md)** — the AWS setup: instance sizing, S3 bucket and policy, IAM, security group.
 
 ## Operations
 
@@ -1336,7 +559,7 @@ stages contend for the same cores and both finish slower than they would back
 to back.
 
 Which is also how you find out whether the instance is right — see
-[1. The instance](#1-the-instance) for the starting point and the two families
+[1. The instance](docs/deploy-aws-ec2.md#1-instance) for the starting point and the two families
 to avoid.
 
 ### Storage
@@ -1347,7 +570,7 @@ copy. Once `publish` uploads them to S3, local disk under `$RUNS_ROOT` is
 swept after `RETENTION_HOURS` (default **6** — down from 72 before artifacts
 moved to S3; the 320 GB volume is no longer the constraint it used to be,
 because S3 lifecycle rules own the long term, see
-[Deployment](#deployment-ec2)).
+[Deployment](docs/deploy-aws-ec2.md)).
 
 **A run submitted through this flow whose artifacts have not reached S3
 (`input_key` set and `artifacts_uploaded = False`) is never purged**, for the
@@ -1805,11 +1028,14 @@ test harness is happy.
 make images-push && make images-lock
 
 git commit -am "feat(pipelines): add your-pipeline" && git push
+```
 
-# on the EC2 host
-cd /srv/dharini/app && git pull
-docker compose up -d --build
-make images-pull                             # if images.lock.json changed
+Open a pull request. After it merges, CI publishes a new application image
+(`sha-<commit>`, or a release tag), which contains your pipeline and the lock
+file. Then, on the server:
+
+```bash
+./deploy.sh <version>
 curl -s localhost:8000/v1/pipelines | jq '.[].id'   # the new id is listed
 ```
 
@@ -1917,17 +1143,19 @@ build if a manifest declares a repository under any other namespace, so a
 personal account cannot reach production by accident.
 
 **The normal path is CI, and you should prefer it.**
-`.github/workflows/images.yml` triggers on any push to `main` touching
-`shared/**`, `app/pipelines/*/manifest.yaml`, `app/pipelines/*/docker/**` or
+`.github/workflows/images.yml`, run by a maintainer (Actions → images → Run
+workflow) on the pull-request branch after a change to `shared/**`,
+`app/pipelines/*/manifest.yaml`, `app/pipelines/*/docker/**` or
 `tools/images.py`. It builds, pushes, regenerates `images.lock.json` and commits
 the lock back to the branch. It authenticates from the `DOCKERHUB_USERNAME` and
 `DOCKERHUB_TOKEN` repository secrets — an **access token**, created under
 *Docker Hub → Account Settings → Personal access tokens* with Read & Write
 scope, never an account password.
 
-So in practice: merge the Dockerfile and manifest to `main`, wait for the
-`images` workflow, then `git pull` to get the refreshed lock file. Nothing to
-run by hand.
+So in practice: dispatch the `images` workflow on your pull-request branch
+(Actions → images → Run workflow) so the refreshed lock lands in the PR, then
+merge. It is deliberately not triggered by the pull request itself, since that
+would hand the registry credentials to forks.
 
 **Pushing by hand**, when you need the image before a merge:
 
@@ -1958,12 +1186,11 @@ Three things about that sequence:
   failure surfaces in production rather than in CI.
 
 **Then deploy it.** Digests are pinned, so a new image does not reach the server
-until you pull it:
+until a version that contains the new lock is deployed. `deploy.sh` pulls the
+tool images at the digests that version pins:
 
 ```bash
-cd /srv/dharini/app && git pull
-make images-pull                # fetches the new digest
-docker compose up -d --build
+./deploy.sh <version>
 ```
 
 With `REQUIRE_PINNED_IMAGES=true`, a manifest entry with no matching lock entry
@@ -1990,7 +1217,7 @@ not a result.
    service holds no `s3:DeleteObject` by design, so `uploads/` and `runs/`
    grow until something outside this service reclaims them. A cost item, not
    a correctness one — local disk is swept on `RETENTION_HOURS` regardless.
-   See [Versioning and lifecycle](#versioning-and-lifecycle-both-off-deliberately).
+   See [Versioning and lifecycle](docs/deploy-aws-ec2.md#s3-versioning-and-lifecycle).
 4. **`S3Store` is exercised locally and manually, not in CI.**
    `tests/test_storage_s3.py` runs against the `minio` dev-profile service and
    is skipped whenever `S3_ENDPOINT_URL` is unset — which is always true in
@@ -2021,3 +1248,15 @@ not a result.
 8. **The worker mounts the Docker socket**, which is root-equivalent access to
    the host. Acceptable only because no client input ever reaches a shell — do
    not add a code path that changes that.
+
+---
+
+## License
+
+Released under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE). The tools
+this service orchestrates run in their own containers under their own licences,
+and **Medaka is not OSI-approved** (optional, never the default). See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+If you fork, publish tool images under your own Docker Hub namespace and change
+the `dsihartpark/` prefix in the manifests and in `tests/test_images.py`.

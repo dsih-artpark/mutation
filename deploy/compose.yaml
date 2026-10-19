@@ -1,0 +1,88 @@
+# Production compose file: runs a published image and builds nothing.
+# Use ./deploy.sh <version>; see docs/DEPLOYMENT.md. For development use
+# ../docker-compose.yml.
+#
+# RUNS_ROOT and REFS_ROOT are mounted at the same absolute path inside the
+# containers as on the host. The worker starts tool containers through the host
+# Docker daemon, which resolves bind-mount sources on the host.
+
+# Fixed, not derived from the directory name: volumes are named after the
+# project, so a different name would start on an empty database.
+name: ${COMPOSE_PROJECT_NAME:-dharini}
+
+x-app: &app
+  # No default tag, so a restart can never become an upgrade. deploy.sh writes
+  # APP_VERSION into .env.
+  image: ${DHARINI_IMAGE:-dsihartpark/dharini-mutation-pipeline}:${APP_VERSION:?APP_VERSION is not set. Run ./deploy.sh <version>}
+  platform: linux/amd64
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    RUNS_ROOT: ${RUNS_ROOT:-/srv/dharini/runs}
+    REFS_ROOT: ${REFS_ROOT:-/srv/dharini/references}
+    REDIS_URL: redis://redis:6379/0
+    DATABASE_URL: postgresql+psycopg://dharini:${POSTGRES_PASSWORD:-dharini}@postgres:5432/dharini
+  volumes:
+    - ${RUNS_ROOT:-/srv/dharini/runs}:${RUNS_ROOT:-/srv/dharini/runs}
+    - ${REFS_ROOT:-/srv/dharini/references}:${REFS_ROOT:-/srv/dharini/references}
+  depends_on:
+    redis:
+      condition: service_started
+    postgres:
+      condition: service_healthy
+
+services:
+  api:
+    <<: *app
+    container_name: dharini_api
+    ports:
+      # Loopback by default. Set API_BIND=0.0.0.0 in .env to accept other hosts.
+      - "${API_BIND:-127.0.0.1}:8000:8000"
+
+  worker:
+    <<: *app
+    container_name: dharini_worker
+    command: celery -A app.worker.celery worker --loglevel=info
+    volumes:
+      - ${RUNS_ROOT:-/srv/dharini/runs}:${RUNS_ROOT:-/srv/dharini/runs}
+      - ${REFS_ROOT:-/srv/dharini/references}:${REFS_ROOT:-/srv/dharini/references}
+      # Lets the worker start tool containers. Root-equivalent on the host, so
+      # use a dedicated host (see app/runtime/runner.py).
+      - /var/run/docker.sock:/var/run/docker.sock
+    # GID of the host's docker group: getent group docker | cut -d: -f3
+    group_add:
+      - ${DOCKER_GID:-999}
+
+  beat:
+    <<: *app
+    container_name: dharini_beat
+    command: celery -A app.worker.celery beat --loglevel=info
+
+  # Redis 7.4+ is not OSI-licensed; see THIRD_PARTY_NOTICES.md.
+  redis:
+    image: redis:7
+    container_name: dharini_redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --appendonly no
+    volumes:
+      - redis_data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: dharini_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dharini
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dharini}
+      POSTGRES_DB: dharini
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dharini"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  redis_data:
+  postgres_data:
