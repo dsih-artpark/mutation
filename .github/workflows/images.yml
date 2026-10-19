@@ -28,11 +28,11 @@ jobs:
       # depth 2 so the "did anything change" diff below has a parent to compare
       # against. On a merge commit HEAD^ is the previous tip of main, so the
       # diff covers the whole merged branch.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
 
@@ -78,7 +78,7 @@ jobs:
             exit 1
           fi
 
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         if: steps.gate.outputs.build == 'true'
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}

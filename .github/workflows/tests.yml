@@ -17,7 +17,7 @@ jobs:
       # absent -- this turns it into a failure. readme.md promises this.
       REQUIRE_DOCKER: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # No actions/setup-python and no pip install, deliberately. Every make
       # target runs inside the dev image, so CI exercises the same interpreter
@@ -42,7 +42,7 @@ jobs:
   snippy-fasta:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Only this pipeline's images. The full set is ~9 GB against a runner's
       # ~14 GB of disk, and ont-lsdv is verifiable on any developer machine.
@@ -80,7 +80,7 @@ jobs:
 
       - name: Upload the run directory
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: snippy-fasta-failure
           path: |
@@ -93,7 +93,7 @@ jobs:
   production-image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: The default build target must not carry test dependencies
         run: |
