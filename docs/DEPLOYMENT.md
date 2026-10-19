@@ -72,8 +72,15 @@ default in `app/config.py`.
 
 It validates your setup, pulls the application and tool images, takes a database
 dump to `backups/` (last five kept), restarts the stack and waits for `/health`.
-On failure it restores the previous version. Options: `--no-backup`,
-`--skip-tool-images`, `--no-pull`, `--new-database`, `--allow-mutable`.
+On failure it restores the previous version. After a successful deploy it removes
+tool images that the new version no longer pins, so old versions do not pile up
+on disk. Options: `--no-backup`, `--skip-tool-images`, `--keep-old-images`,
+`--no-pull`, `--new-database`, `--allow-mutable`.
+
+Pruning only touches the tool-image repositories listed in `images.lock.json`; it
+never removes the application image, Postgres, Redis or other images, and Docker
+refuses to remove an image a container is using. Rolling back to an older version
+pulls that version's tool images again.
 `./deploy.sh status` shows the running version and recent deploys.
 
 Migrations run at API startup. A run in progress when the worker restarts is

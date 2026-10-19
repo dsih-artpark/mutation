@@ -14,6 +14,7 @@
 #   --no-backup         skip the pg_dump taken before the restart
 #   --no-pull           use the image already on this host (docker load, air-gapped)
 #   --skip-tool-images  do not pre-pull the tool images (~9 GB the first time)
+#   --keep-old-images   do not remove tool images that the new version no longer pins
 #   --new-database      allow starting on an empty database even though another
 #                       Postgres volume exists on this host
 #   --allow-mutable     accept the `edge` tag
@@ -79,6 +80,22 @@ wait_healthy() {
   return 1
 }
 
+# Removes tool images whose repository the lock pins but whose digest it no
+# longer does. Takes the lock's JSON as $1. Never touches the application image,
+# Postgres, Redis or anything outside the lock's repositories, and `docker rmi`
+# refuses an image a container is using.
+prune_tool_images() {
+  local keep repos ref
+  keep="$(jq -r '.images[].ref' <<<"$1")"
+  repos="$(jq -r '.images[].ref | split("@")[0]' <<<"$1" | sort -u)"
+  docker image ls --digests --format '{{.Repository}}@{{.Digest}}' | while read -r ref; do
+    case "$ref" in *@\<none\>) continue ;; esac
+    grep -qxF "${ref%%@*}" <<<"$repos" || continue
+    grep -qxF "$ref" <<<"$keep" && continue
+    if docker rmi "$ref" >/dev/null 2>&1; then log "Removed old tool image $ref"; fi
+  done
+}
+
 # -- status --------------------------------------------------------------------
 if [ "${1:-}" = "status" ]; then
   echo "Configured version: $(env_get APP_VERSION)"
@@ -91,12 +108,13 @@ if [ "${1:-}" = "status" ]; then
 fi
 
 # -- arguments -----------------------------------------------------------------
-BACKUP=1 TOOL_IMAGES=1 NEW_DB=0 MUTABLE=0 PULL=1 VERSION=""
+BACKUP=1 TOOL_IMAGES=1 PRUNE=1 NEW_DB=0 MUTABLE=0 PULL=1 VERSION=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-backup)        BACKUP=0 ;;
     --no-pull)          PULL=0 ;;
     --skip-tool-images) TOOL_IMAGES=0 ;;
+    --keep-old-images)  PRUNE=0 ;;
     --new-database)     NEW_DB=1 ;;
     --allow-mutable)    MUTABLE=1 ;;
     -h|--help)          sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; exit 0 ;;
@@ -190,6 +208,10 @@ log "Starting services"
 if "${COMPOSE[@]}" up -d && "${COMPOSE[@]}" ps && wait_healthy "$HEALTH_TIMEOUT"; then
   env_set APP_VERSION "$VERSION"
   record "$VERSION" ok
+  if [ "$PRUNE" = 1 ] && [ "$TOOL_IMAGES" = 1 ]; then
+    lock="$(docker run --rm --platform linux/amd64 --entrypoint cat "$IMAGE:$VERSION" /app/images.lock.json)" \
+      && prune_tool_images "$lock" || warn "could not prune old tool images (the deploy itself succeeded)"
+  fi
   log "Deployed $VERSION"
   exit 0
 fi
