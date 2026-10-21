@@ -33,6 +33,21 @@ def select_bam(ctx: RunContext) -> Path:
                            and ctx.extra_input("primer_bed") else "alignment.sorted.bam")
 
 
+def variant_filter(ctx: RunContext) -> tuple[str, str]:
+    """The PASS rule for the selected caller, as (bcftools expression, short note).
+
+    Defined once: the variant stage marks calls with it, the consensus uses only
+    the PASS calls, and the report shows the note -- so the three cannot drift.
+    """
+    tool = str(ctx.param("variant.tool", "bcftools")).lower()
+    if tool == "lofreq":
+        min_af = ctx.param("consensus.min_af", 0.5)
+        return f"INFO/AF>={min_af}", f"PASS = allele frequency >= {min_af}; only PASS used in consensus"
+    if tool == "freebayes":
+        return "QUAL>=20", "PASS = QUAL >= 20; only PASS used in consensus"
+    return "QUAL>=20 && INFO/DP>=10", "PASS = QUAL >= 20 and depth >= 10; only PASS used in consensus"
+
+
 def normalise_vcf(ctx: RunContext, vcf: Path) -> Path:
     """Return a bgzip-compressed, indexed VCF for downstream consumers."""
     compressed = ctx.work_dir / f"{vcf.name}.gz"

@@ -24,6 +24,21 @@ def run(ctx: RunContext):
     else:
         consensus_text = "bcftools" if ctx.param("consensus.enabled", True) else "disabled"
 
+    metrics = ctx.result.metrics
+    if "variant_filter_note" in metrics:
+        filter_text = metrics["variant_filter_note"]
+        calls_text = (f"{metrics.get('variant_count', 0)} called, "
+                      f"{metrics.get('variant_count_pass', 0)} PASS")
+    else:
+        filter_text = calls_text = "n/a"
+
+    if consensus_text == "disabled":
+        mask_text = "not applied (consensus disabled)"
+    elif "consensus_masked_positions" in metrics:
+        mask_text = f"{metrics['consensus_mask_note']} ({metrics['consensus_masked_positions']} positions masked)"
+    else:
+        mask_text = metrics.get("consensus_mask_note", "n/a")
+
     lines = [
         "=" * 64,
         "ILLUMINA LSDV VARIANT ANALYSIS REPORT",
@@ -37,7 +52,10 @@ def run(ctx: RunContext):
         "Aligner        : bwa",
         f"Primer trim    : {primer_text}",
         f"Variant caller : {ctx.param('variant.tool', 'bcftools')}",
+        f"Variant filter : {filter_text}",
+        f"Variants       : {calls_text}",
         f"Consensus      : {consensus_text}",
+        f"Low-depth mask : {mask_text}",
         "Annotation     : snpEff / LSDV",
         "",
         "STAGE OUTCOMES",
