@@ -1,4 +1,4 @@
-"""Consensus FASTA generation from the caller VCF."""
+"""Consensus FASTA generation from the PASS calls of the marked caller VCF."""
 
 from __future__ import annotations
 
@@ -11,32 +11,27 @@ from . import specs
 
 def run(ctx: RunContext, vcf: Path, reference: Path, bam: Path | None = None) -> Path:
     output = ctx.work_dir / "consensus.fasta"
-    filtered_vcf = ctx.work_dir / "variants.for_consensus.vcf.gz"
+    pass_vcf = ctx.work_dir / "variants.pass.vcf.gz"
     mask_bed = ctx.work_dir / "low_depth_mask.bed"
-    tool = str(ctx.param("variant.tool", "bcftools")).lower()
     min_depth = int(ctx.param("consensus.min_depth", 10))
 
-    custom_filter = ctx.param("consensus.filter", "")
-    if custom_filter:
-        expr = str(custom_filter)
-    elif tool == "lofreq":
-        min_af = ctx.param("consensus.min_af", 0.5)
-        expr = f"INFO/AF>={min_af}"
-    elif tool == "freebayes":
-        expr = "QUAL>=20"
-    else:  # bcftools
-        expr = "QUAL>=20 && INFO/DP>=10"
-
     with ctx.stage("consensus"):
+        # The variant stage already marked each call PASS or LowQual with the
+        # caller's rule; the consensus takes only PASS.
         ctx.run(
             specs.CONSENSUS,
-            ["bcftools", "filter", "-i", expr, "-Oz", "-o", str(filtered_vcf), str(vcf)],
+            ["bcftools", "view", "-f", "PASS", "-Oz", "-o", str(pass_vcf), str(vcf)],
         )
-        ctx.require(filtered_vcf)
-        ctx.run(specs.CONSENSUS, ["bcftools", "index", "-f", str(filtered_vcf)])
+        ctx.require(pass_vcf)
+        ctx.run(specs.CONSENSUS, ["bcftools", "index", "-f", str(pass_vcf)])
 
         consensus_argv = ["bcftools", "consensus", "-f", str(reference)]
-        if bam and bam.is_file() and min_depth > 0:
+        ctx.metric("consensus_min_depth_mask", min_depth)
+        if min_depth <= 0:
+            ctx.metric("consensus_mask_note", "masking off (min depth = 0)")
+        elif not (bam and bam.is_file()):
+            ctx.metric("consensus_mask_note", "masking skipped: no alignment available")
+        else:
             ctx.run(
                 specs.CONSENSUS,
                 sh('samtools depth -aa -J -d 0 "$BAM" '
@@ -44,11 +39,15 @@ def run(ctx: RunContext, vcf: Path, reference: Path, bam: Path | None = None) ->
                    '> "$MASK"'),
                 env={"BAM": str(bam), "MIN_DEPTH": str(min_depth), "MASK": str(mask_bed)},
             )
-            if mask_bed.is_file() and mask_bed.stat().st_size > 0:
+            masked = 0
+            if mask_bed.is_file():
+                masked = sum(1 for line in mask_bed.read_text(errors="replace").splitlines() if line.strip())
+            if masked:
                 consensus_argv.extend(["-m", str(mask_bed)])
-                ctx.metric("consensus_min_depth_mask", min_depth)
+            ctx.metric("consensus_masked_positions", masked)
+            ctx.metric("consensus_mask_note", f"N = depth < {min_depth} reads")
 
-        consensus_argv.append(str(filtered_vcf))
+        consensus_argv.append(str(pass_vcf))
         ctx.run(
             specs.CONSENSUS,
             consensus_argv,
@@ -62,5 +61,4 @@ def run(ctx: RunContext, vcf: Path, reference: Path, bam: Path | None = None) ->
             ctx.metric("consensus_length", len(sequence))
             ctx.metric("consensus_ambiguous_bases", ambiguous)
             ctx.metric("consensus_completeness_percent", round((1 - ambiguous / len(sequence)) * 100, 2))
-            ctx.metric("consensus_filter", expr)
     return ctx.artifact(output, kind="consensus", label="Consensus genome")

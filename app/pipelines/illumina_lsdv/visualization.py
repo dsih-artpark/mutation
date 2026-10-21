@@ -184,7 +184,8 @@ def run(ctx: RunContext, annotated_vcf: Path, rows: list[dict]) -> Path:
         "<b>HGVS.c:</b> %{customdata[3]}<br>"
         "<b>HGVS.p:</b> %{customdata[4]}<br>"
         "<b>DP:</b> %{customdata[6]}<br>"
-        "<b>AF:</b> %{customdata[7]}<extra></extra>"
+        "<b>AF:</b> %{customdata[7]}<br>"
+        "<b>Filter:</b> %{customdata[8]}<extra></extra>"
     )
 
     fig = go.Figure()
@@ -226,6 +227,7 @@ def run(ctx: RunContext, annotated_vcf: Path, rows: list[dict]) -> Path:
                     f"{r.get('ref', '')} → {r.get('alt', '')}",
                     r.get("depth") if r.get("depth") is not None else "",
                     r.get("allele_freq") if r.get("allele_freq") is not None else "",
+                    r.get("filter") or "",
                 ]
                 for r in sub
             ]
