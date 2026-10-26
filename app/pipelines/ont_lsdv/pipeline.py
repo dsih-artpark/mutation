@@ -13,7 +13,7 @@ from ...runtime.context import RunContext, RunResult
 from ...vcf import parse_annotated_vcf, summarise
 from ..base import ExtraInput, Pipeline
 from ..registry import registry
-from . import align, annotate, common, consensus, primer, qc, report, variant
+from . import align, annotate, common, consensus, primer, qc, report, variant, visualization
 
 
 class OntLsdvPipeline(Pipeline):
@@ -29,7 +29,7 @@ class OntLsdvPipeline(Pipeline):
     accepted_extensions = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
     input_filename = "reads.fastq.gz"
 
-    stages = ["prepare", "qc", "align", "primer", "variant", "consensus", "annotate", "report"]
+    stages = ["prepare", "qc", "align", "primer", "variant", "consensus", "annotate", "visualise", "report"]
 
     # One input per trimming tool, because the two read different formats and
     # neither checks what it was given: align_trim needs a BED with one row per
@@ -249,6 +249,15 @@ class OntLsdvPipeline(Pipeline):
                     "config": {"type": "string", "default": "/snpEff/snpEff.config"},
                 },
             },
+
+            "visualization": {
+                "type": "object", "additionalProperties": False,
+                "title": "Variant visualization",
+                "description": "Create an interactive HTML view of annotated variants.",
+                "properties": {
+                    "enabled": {"type": "boolean", "default": True},
+                },
+            },
         },
     }
 
@@ -280,6 +289,22 @@ class OntLsdvPipeline(Pipeline):
         ctx.set_variants(rows)
         for key, value in summarise(rows).items():
             ctx.metric(key, value)
+
+        # Downstream of the annotated rows only; a plotting failure is logged
+        # rather than allowed to fail a run whose science already succeeded.
+        if ctx.param("visualization.enabled", True):
+            chart, error = None, None
+            with ctx.stage("visualise"):
+                try:
+                    chart = visualization.run(ctx, annotated, rows)
+                except Exception as exc:
+                    error = exc
+            if chart:
+                ctx.artifact(chart, kind="visualization", label="Variant visualization")
+            elif error:
+                ctx.log(f"[visualise] visualisation unavailable: {error}")
+        else:
+            ctx.skip("visualise", "visualization disabled")
 
         with ctx.stage("report"):
             report.run(ctx)
