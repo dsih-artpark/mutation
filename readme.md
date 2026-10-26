@@ -1148,7 +1148,8 @@ workflow) on the pull-request branch after a change to `shared/**`,
 `app/pipelines/*/manifest.yaml`, `app/pipelines/*/docker/**` or
 `tools/images.py`. It builds, pushes, regenerates `images.lock.json` and commits
 the lock back to the branch. It authenticates from the `DOCKERHUB_USERNAME` and
-`DOCKERHUB_TOKEN` repository secrets — an **access token**, created under
+`DOCKERHUB_TOKEN` secrets of the `images` environment, which waits for a
+maintainer's approval on every run — an **access token**, created under
 *Docker Hub → Account Settings → Personal access tokens* with Read & Write
 scope, never an account password.
 

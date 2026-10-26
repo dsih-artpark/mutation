@@ -124,8 +124,11 @@ create a new empty database.
 | Tag `vX.Y.Z` | `:X.Y.Z`, `:X.Y` and `:latest` are pushed |
 | Dockerfile or manifest change | A maintainer runs the `images` workflow on the PR branch; it pushes the tool images and commits the refreshed `images.lock.json` |
 
-Repository secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. Pull requests
-never see them. To deploy from CI, have your pipeline run `deploy.sh <version>`
+The Docker Hub credentials, `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, are
+secrets of two environments, not repository secrets. `publish` releases them only
+to runs on `main` or a `vX.Y.Z` tag. `images` releases them to a run on any
+branch once a maintainer approves it. Pull requests never see them. To deploy
+from CI, have your pipeline run `deploy.sh <version>`
 on the host (for example over SSH or AWS SSM) from a private repository, so
 that no server credentials live in this one.
 

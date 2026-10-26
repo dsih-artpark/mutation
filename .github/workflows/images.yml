@@ -5,6 +5,10 @@
 # after changing a Dockerfile or a manifest version. It pushes with the
 # DOCKERHUB_* secrets and commits the refreshed lock to that branch. It never
 # runs on pull requests, so forks cannot reach the credentials.
+#
+# The secrets belong to the `images` environment, which asks a maintainer to
+# approve every run before the job can read them (Settings -> Environments ->
+# images). The run executes the code on the branch, so look at the branch first.
 
 name: images
 
@@ -22,6 +26,7 @@ permissions:
 jobs:
   build-push-lock:
     runs-on: ubuntu-latest
+    environment: images
     outputs:
       sha: ${{ steps.result.outputs.sha }}
     steps:
@@ -72,8 +77,8 @@ jobs:
         if: steps.gate.outputs.build == 'true'
         run: |
           if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ] || [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
-            echo "::error::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are not set on this repository."
-            echo "Settings -> Secrets and variables -> Actions. The token is a Docker Hub"
+            echo "::error::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are not set in the images environment."
+            echo "Settings -> Environments -> images. The token is a Docker Hub"
             echo "personal access token with Read & Write scope, not an account password."
             exit 1
           fi
