@@ -34,14 +34,16 @@ Raw Paired FASTQ (R1 + R2)
    (iVar Primer Clipping)          (Validates BED contigs against reference)
         │
         ▼
-   [Stage: variant] ─────────────► variants.<caller>.vcf.gz (Indexed caller VCF)
-   (bcftools -d 1000 / lofreq / freebayes)
+   [Stage: variant] ─────────────► variants.<caller>.vcf.gz (every call, marked PASS / LowQual)
+   (bcftools -d 1000 / lofreq / freebayes
+    + caller-specific PASS rule)
         │
         ├─────────────────────────────────────────────────┐
         ▼                                                 ▼
    [Stage: consensus] ────────► consensus.fasta      [Stage: annotate] ──► annotated.vcf
-   (Caller-specific filter +                         (snpEff LSDV database)
-    Low-depth mask via -m)                                │
+   (PASS calls only +                                (snpEff LSDV database,
+    Low-depth mask via -m)                            every call, labels kept)
+        │                                                 │
         │                                                 ▼
         │                                            [Stage: visualise] ─► visualization.html
         │                                            (Plotly Interactive Genome Dashboard)
@@ -56,11 +58,11 @@ Raw Paired FASTQ (R1 + R2)
 ## 🔬 Stage-by-Stage Functional Breakdown
 
 ### 1. Preparation & Reference Indexing (`prepare` / `common.py`)
-- Automatically validates the shared LSDV reference FASTA (`lsdv_reference_sequence.fasta`) and its index (`.fai`).
-- Generates BWA index structures (`.bwt`, `.pac`, `.ann`, `.amb`, `.sa`) if missing, caching them across runs.
+- Resolves the reference FASTA (default `lsdv_reference_sequence.fasta`) inside the shared references directory, rejecting any path that points outside it.
+- Copies it into the run's work directory as `reference.fasta` and indexes it with `samtools faidx` (`.fai`).
 
 ### 2. Read Quality Control & Preprocessing (`qc` / `qc.py`)
-- **Tool**: `fastp` (v0.24.0).
+- **Tool**: `fastp` (v1.3.3).
 - **Functionality**:
   - Auto-detects and clips standard Illumina TruSeq / Nextera adapters for paired-end reads.
   - Applies a sliding Phred quality cutoff (default: **Q20** / 99% accuracy; user-configurable up to Q30).
@@ -71,6 +73,7 @@ Raw Paired FASTQ (R1 + R2)
 ### 3. Reference Alignment & Coverage Statistics (`align` / `align.py`)
 - **Tools**: `BWA-MEM` + `samtools`.
 - **Functionality**:
+  - Builds the BWA index (`.bwt`, `.pac`, `.ann`, `.amb`, `.sa`) in the work directory on every run (seconds for the 151 kbp genome).
   - Aligns clean paired reads against the indexed LSDV genome.
   - Adds Illumina read group headers (`@RG\tID:illumina\tSM:sample\tPL:ILLUMINA`).
   - Streams SAM directly into `samtools sort` to produce coordinate-sorted `alignment.sorted.bam`.
@@ -78,7 +81,7 @@ Raw Paired FASTQ (R1 + R2)
 - **Tracked Metrics**: `reads_total`, `reads_mapped`, `reads_mapped_percent`, `aligner: "bwa"`.
 
 ### 4. Amplicon Primer Scheme Trimming (`primer` / `primer.py`)
-- **Tool**: `iVar trim` (v1.4.2) + `samtools`.
+- **Tool**: `iVar trim` (v1.4.4) + `samtools`.
 - **Why It Matters**: In amplicon-based sequencing (e.g. 2 kbp tiled amplicon schemes), primer binding sites contain synthetic oligonucleotides that artificially introduce mismatches, inflating false-positive variant calls by over 100 variants.
 - **Functionality**:
   - Soft-clips primer sequences from 5' and 3' read ends using an uploaded primer BED scheme (e.g. `primers-2kb.bed`). The `-e` flag is always passed so reads that do not overlap any primer are retained rather than silently discarded.
@@ -98,34 +101,48 @@ The pipeline provides three caller options tailored to different analytical goal
   - Ideal for detecting low-frequency (sub-50%) intra-host viral variants.
 * **`freebayes` (Haplotype-Aware Caller)**:
   - Bayesian caller evaluating multi-nucleotide variants and complex indels (`freebayes -p 1`).
-- **Output**: Caller VCF is normalized, compressed, and indexed as `variants.<caller>.vcf.gz`.
+- **PASS / LowQual Marking (soft filter)**:
+  Every call is kept and labelled with the selected caller's rule using `bcftools filter -s LowQual -i <rule>`:
+
+  | Caller | PASS rule | Note recorded |
+  | :--- | :--- | :--- |
+  | `bcftools` | `QUAL>=20 && INFO/DP>=10` | PASS = QUAL >= 20 and depth >= 10; only PASS used in consensus |
+  | `lofreq` | `INFO/AF>=<consensus.min_af>` (default 0.5) | PASS = allele frequency >= 0.5; only PASS used in consensus |
+  | `freebayes` | `QUAL>=20` | PASS = QUAL >= 20; only PASS used in consensus |
+
+  - Calls meeting the rule get `FILTER=PASS`; the rest get `FILTER=LowQual`. Nothing is removed.
+  - A call the caller already flagged itself (e.g. LoFreq `sb_fdr`) keeps that flag, so it is reported but not used in the consensus.
+  - bcftools writes the rule into the VCF header: `##FILTER=<ID=LowQual,Description="Set if not true: QUAL>=20 && INFO/DP>=10">`.
+  - The rules are fixed per caller; there is no free-text filter parameter.
+- **Output**: Caller VCF is bgzip-compressed, marked, and tabix-indexed as `variants.<caller>.vcf.gz`.
+- **Tracked Metrics**: `variant_caller`, `variant_filter` (the rule), `variant_filter_note` (short note above).
 
 ### 6. Consensus Sequence Generation with Low-Depth Masking (`consensus` / `consensus.py`)
-- **Caller-Specific Consensus Filtering**:
-  Before mutating the reference, calls are filtered so non-dominant sub-clones or noise do not corrupt the consensus sequence:
-  - **LoFreq**: Filtered by `INFO/AF >= 0.5` (only dominant $\ge 50\%$ majority variants enter consensus).
-  - **BCFtools**: Filtered by `QUAL >= 20 && INFO/DP >= 10`.
-  - **FreeBayes**: Filtered by `QUAL >= 20`.
-  - **User Customization**: Users can override filters via `consensus.min_af` or `consensus.filter`.
+- **PASS Calls Only**:
+  `bcftools view -f PASS` takes only the calls marked PASS in the variant stage, so non-dominant sub-clones or noise do not corrupt the consensus. The same marked VCF goes to annotation, so the consensus and the reported variants always agree on which calls passed.
 - **Low-Depth Masking (`-m`)**:
   - Scans read depth using `samtools depth -aa -J -d 0`.
     - `-aa`: emits a depth row for **every** reference position, including positions with zero depth and positions not covered by any read. Without this, a sample with no mapped reads produces an empty depth file, no mask is applied, and the reference sequence is returned as a fake 100%-complete consensus.
     - `-J`: counts reads that span a deletion gap toward depth at that position. Without this, bases covered only by deletion-spanning reads score depth 0, enter the low-depth mask, and `bcftools consensus` skips the deletion variant — replacing a real indel with `N`. LSDV field strains carry genuine deletions against the reference, so this matters.
   - Positions with depth below `consensus.min_depth` (default: **10x**) are collected into `low_depth_mask.bed`.
-  - Invokes `bcftools consensus -m low_depth_mask.bed` to mask unsequenced/low-depth regions with **`N`**.
+  - Invokes `bcftools consensus -m low_depth_mask.bed` to mask unsequenced/low-depth regions with **`N`**. The mask and the variants are applied together in reference coordinates, so indels cannot shift the mask.
+  - Set `consensus.min_depth = 0` to turn masking off.
 - **Honest Completeness Metric**:
   Accurately counts ambiguous `N` bases to report true genome completeness (`consensus_completeness_percent`), preventing uncovered samples from falsely claiming 100% completeness.
+- **Tracked Metrics**: `consensus_min_depth_mask`, `consensus_masked_positions`, `consensus_mask_note` (e.g. `N = depth < 10 reads`), `consensus_length`, `consensus_ambiguous_bases`, `consensus_completeness_percent`.
 
 ### 7. Functional Variant Annotation (`annotate` / `annotate.py`)
 - **Tool**: `snpEff` (v5.4).
 - **Database**: Custom pre-built LSDV genome database (`NC_003027.1`).
 - **Functionality**:
+  - Annotates the marked caller VCF, so every call is annotated and keeps its `PASS` / `LowQual` label.
   - Annotates variants with amino acid alterations, codon changes, and HGVS nomenclature (`HGVS.c`, `HGVS.p`).
   - Classifies biological impact:
     - 🔴 **HIGH**: Frameshift mutations, stop-codon gained.
     - 🟡 **MODERATE**: Missense mutations, in-frame insertions/deletions.
     - 🟢 **LOW**: Synonymous mutations, start codon retained.
     - ⚪ **MODIFIER**: Upstream / downstream gene variants.
+- **Tracked Metrics**: `variant_count` (all calls), `variant_count_pass` (calls used in the consensus), `snp_count`, `indel_count`, `by_impact`, `by_effect`.
 
 ### 8. Interactive Plotly Visualization (`visualise` / `visualization.py`)
 - **Tool**: Plotly (Python).
@@ -134,12 +151,18 @@ The pipeline provides three caller options tailored to different analytical goal
   - Reads `lsdv_reference_sequence.gff3` to display gene and CDS genomic tracks.
   - Dropdown Zoom Controls: Zoom into individual LSDV genes or inspect the full 151 kbp genome.
   - Functional Impact Filters: Filter mutations by impact level or consequence category.
-  - Interactive Tooltips: Hovering over mutations reveals exact genomic position, reference/alternate allele, depth, allele frequency, gene name, and protein alteration.
+  - Interactive Tooltips: Hovering over mutations reveals exact genomic position, reference/alternate allele, depth, allele frequency, gene name, protein alteration, and filter status (`PASS` / `LowQual`).
   - **Resilience Guard**: Wrapped in error-isolation handlers; a non-critical plotting error will skip the visualization stage without failing the scientific run.
 
 ### 9. Execution Summary Report (`report` / `report.py`)
 - Generates a human-readable text report (`pipeline_report.txt`) summarizing:
   - Workflow settings and actual execution state.
+  - Variant filter note, calls vs. PASS count, and the low-depth mask note with the number of masked positions, e.g.:
+    ```text
+    Variant filter : PASS = QUAL >= 20 and depth >= 10; only PASS used in consensus
+    Variants       : 27 called, 23 PASS
+    Low-depth mask : N = depth < 10 reads (1950 positions masked)
+    ```
   - Stage execution durations.
   - Total reads, mapped read percentage, variant counts, and functional impact distributions.
   - Complete index of all generated output artifact paths.
@@ -148,7 +171,7 @@ The pipeline provides three caller options tailored to different analytical goal
 
 ## 📊 Benchmark Comparison Across Tool Combinations
 
-The following benchmarks demonstrate real results obtained across different tool configurations on verified LSDV sample datasets:
+The following benchmarks demonstrate real results obtained across different tool configurations on verified LSDV sample datasets. **Variants** counts every caller call (`variant_count`), which is unchanged by the PASS / LowQual marking; the PASS subset used in the consensus is reported separately as `variant_count_pass`.
 
 | Sample | QC Tool | Aligner | Primer Trimming (`iVar`) | Variant Caller | Mapped Reads (%) | Variants | SNPs | Indels | Biological Observation |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
@@ -186,12 +209,11 @@ The following benchmarks demonstrate real results obtained across different tool
 | `primer.min_length` | integer | `30` | $\ge 1$ | Minimum read length in bp after primer clipping |
 | `primer.min_quality` | integer | `20` | 0 – 40 | Minimum Phred quality score for iVar sliding window |
 | `primer.sliding_window` | integer | `4` | $\ge 1$ | Sliding window width in bp for iVar primer clipping |
-| `variant.tool` | string | `"bcftools"` | `"bcftools"`, `"lofreq"`, `"freebayes"` | Choose viral variant caller algorithm |
+| `variant.tool` | string | `"bcftools"` | `"bcftools"`, `"lofreq"`, `"freebayes"` | Choose viral variant caller algorithm; also selects the PASS rule (see stage 5) |
 | `variant.ploidy` | integer | `1` | 1 – 2 | Ploidy level (1 for haploid viral genomes) |
 | `consensus.enabled` | boolean | `true` | true / false | Enable consensus genome generation |
-| `consensus.min_af` | float | `0.5` | 0.0 – 1.0 | Minimum allele frequency cutoff for majority consensus (LoFreq) |
-| `consensus.min_depth` | integer | `10` | $\ge 0$ | Minimum depth threshold; regions below this are masked with 'N' |
-| `consensus.filter` | string | `""` | String | Custom BCFtools filter expression override for consensus variants |
+| `consensus.min_af` | float | `0.5` | 0.0 – 1.0 | **LoFreq only**: calls at or above this allele frequency are marked PASS |
+| `consensus.min_depth` | integer | `10` | $\ge 0$ | Positions with depth below this are masked with `N`; `0` = off |
 | `visualization.enabled` | boolean | `true` | true / false | Generate interactive Plotly HTML report |
 
 ---
@@ -201,7 +223,8 @@ The following benchmarks demonstrate real results obtained across different tool
 All stages execute inside containerized environments:
 
 * **Core Pipeline Image**: `dsihartpark/dharini-illumina-core:1.0.0`
-  * Contains: `fastp=0.24.0`, `bwa=0.7.17`, `samtools=1.20`, `bcftools=1.20`, `ivar=1.4.2`, `lofreq=2.1.5`, `freebayes=1.3.6`, `plotly`, `pandas`.
+  * Contains: `fastp=1.3.3`, `bwa=0.7.18`, `samtools=1.22.1`, `bcftools=1.22`, `ivar=1.4.4`, `lofreq=2.1.5`, `freebayes=1.3.10` (plus `fastqc`, `trimmomatic`, `bowtie2`, which the pipeline does not currently use).
+* **Visualization**: runs in the worker's own Python environment (`plotly`), not in a tool container.
 * **Annotation Image**: `dsihartpark/dharini-snpeff:5.4-lsdv-1`
   * Contains: `snpEff=5.4` configured with custom LSDV `NC_003027.1` reference database.
 
@@ -216,9 +239,9 @@ Upon completion, the pipeline publishes the following artifacts:
 | `fastp.html` / `fastp.json` | `qc` | Interactive HTML quality graphs and machine-readable QC metrics |
 | `alignment.flagstat.txt` | `alignment` | Mapping statistics from `samtools flagstat` |
 | `alignment.coverage.txt` | `alignment` | Contig-level coverage and mean depth from `samtools coverage` |
-| `variants.<caller>.vcf.gz` | `vcf` | Compressed and indexed caller VCF (`.vcf.gz` + `.csi`) |
-| `annotated.vcf` | `vcf` | Fully annotated functional variant file from `snpEff` |
-| `consensus.fasta` | `consensus` | Consensus FASTA genome with low-depth regions masked as `N` |
+| `variants.<caller>.vcf.gz` | `vcf` | Compressed caller VCF with every call marked `PASS` / `LowQual` (its `.tbi` index is not published) |
+| `annotated.vcf` | `vcf` | `snpEff`-annotated version of the marked VCF, `PASS` / `LowQual` labels kept |
+| `consensus.fasta` | `consensus` | Consensus FASTA genome built from `PASS` calls, with low-depth regions masked as `N` |
 | `visualization.html` | `visualization` | Standalone interactive Plotly HTML report with zoom & gene tracks |
 | `pipeline_report.txt` | `report` | Complete human-readable execution summary and metrics log |
 
@@ -288,6 +311,6 @@ pipeline = IlluminaLsdvPipeline()
 result = pipeline.run(ctx)
 
 print(f"Status: {result.status}")
-print(f"Variants Found: {result.metrics.get('variant_count')}")
+print(f"Variants Found: {result.metrics.get('variant_count')} ({result.metrics.get('variant_count_pass')} PASS)")
 print(f"Genome Completeness: {result.metrics.get('consensus_completeness_percent')}%")
 ```
