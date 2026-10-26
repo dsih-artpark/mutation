@@ -7,12 +7,12 @@ from pathlib import Path
 from ...runtime.context import RunContext
 from ...runtime.runner import sh
 from . import specs
-from .common import normalise_vcf, threads
+from .common import normalise_vcf, threads, variant_filter
 
 
 def run(ctx: RunContext, bam: Path, reference: Path) -> Path:
     tool = str(ctx.param("variant.tool", "bcftools")).lower()
-    raw = ctx.work_dir / f"variants.{tool}.vcf"
+    raw = ctx.work_dir / f"variants.{tool}.raw.vcf"
 
     with ctx.stage("variant"):
         if tool == "bcftools":
@@ -39,5 +39,22 @@ def run(ctx: RunContext, bam: Path, reference: Path) -> Path:
         ctx.require(raw, hint=f"{tool} did not produce a VCF")
         compressed = normalise_vcf(ctx, raw)
         ctx.metric("variant_caller", tool)
+        marked = _mark(ctx, compressed, ctx.work_dir / f"variants.{tool}.vcf.gz")
 
-    return compressed
+    return marked
+
+
+def _mark(ctx: RunContext, vcf: Path, output: Path) -> Path:
+    """Soft-filter: calls failing the caller's rule get FILTER=LowQual, the rest PASS.
+
+    Nothing is removed, so annotation and the report see every call while the
+    consensus takes only PASS. bcftools also writes the rule into the VCF header.
+    """
+    expr, note = variant_filter(ctx)
+    ctx.run(specs.VARIANT, ["bcftools", "filter", "-s", "LowQual", "-i", expr,
+                            "-Oz", "-o", str(output), str(vcf)])
+    ctx.require(output)
+    ctx.run(specs.VARIANT, ["bcftools", "index", "-f", "-t", str(output)])
+    ctx.metric("variant_filter", expr)
+    ctx.metric("variant_filter_note", note)
+    return output

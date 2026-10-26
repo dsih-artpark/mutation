@@ -66,20 +66,18 @@ class IlluminaLsdvPipeline(Pipeline):
             "variant": {"type": "object", "additionalProperties": False, "title": "Variant calling",
                         "description": "Choose a caller for the haploid LSDV genome.", "properties": {
                             "tool": {"type": "string", "enum": ["bcftools", "lofreq", "freebayes"], "default": "bcftools",
-                                     "title": "Variant caller", "description": "bcftools is the default; LoFreq and FreeBayes are available alternatives."},
+                                     "title": "Variant caller", "description": "PASS rule: bcftools QUAL>=20 and depth>=10; LoFreq AF>=min AF; FreeBayes QUAL>=20. Only PASS calls enter the consensus."},
                             "ploidy": {"type": "integer", "minimum": 1, "maximum": 2, "default": 1},
                         }},
             "consensus": {"type": "object", "additionalProperties": False, "title": "Consensus sequence",
-                          "description": "Consensus is generated from filtered caller variants with bcftools.", "properties": {
+                          "description": "Consensus is generated with bcftools from the PASS variant calls.", "properties": {
                               "enabled": {"type": "boolean", "default": True},
                               "min_af": {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.5,
-                                         "title": "Minimum allele frequency",
-                                         "description": "Allele frequency cutoff for majority consensus when using LoFreq."},
+                                         "title": "Minimum allele frequency (LoFreq only)",
+                                         "description": "LoFreq calls at or above this allele frequency are marked PASS."},
                               "min_depth": {"type": "integer", "minimum": 0, "default": 10,
                                             "title": "Minimum depth for consensus masking",
-                                            "description": "Positions with coverage below this threshold are masked with N."},
-                              "filter": {"type": "string", "default": "", "title": "Custom filter expression",
-                                         "description": "Optional BCFtools filter expression override for consensus variants."},
+                                            "description": "Positions with coverage below this are masked with N. 0 = off."},
                           }},
             "visualization": {"type": "object", "additionalProperties": False, "title": "Variant visualization",
                               "description": "Create an interactive HTML view of annotated variants.", "properties": {
@@ -112,6 +110,7 @@ class IlluminaLsdvPipeline(Pipeline):
         ctx.set_variants(rows)
         for key, value in summarise(rows).items():
             ctx.metric(key, value)
+        ctx.metric("variant_count_pass", sum(1 for row in rows if row.get("filter") == "PASS"))
 
         ctx.artifact(called, kind="vcf", label="Called variants")
 
