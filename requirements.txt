@@ -38,4 +38,4 @@ boto3==1.35.76
 
 # Verifies Dharini's browser session tokens locally. [crypto] pulls the RSA
 # backend needed for RS256 / JWKS; without it only HS256 works.
-PyJWT[crypto]==2.10.1
+PyJWT[crypto]==2.15.0
