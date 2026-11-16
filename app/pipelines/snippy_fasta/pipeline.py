@@ -24,7 +24,7 @@ from .visualization import generate_visualization
 
 class SnippyFastaPipeline(Pipeline):
     id = "snippy-fasta"
-    version = "2.0.0"
+    version = "2.1.0"
     display_name = "FASTA assembly — Snippy + snpEff"
     description = (
         "Calls variants from an assembled FASTA against the LSDV reference "
@@ -59,6 +59,12 @@ class SnippyFastaPipeline(Pipeline):
                 "title": "Minimum allele fraction",
                 "description": "Minimum proportion of reads supporting the variant.",
             },
+            "sample_name": {
+                "type": "string", "default": "", "pattern": "^[A-Za-z0-9._-]{0,64}$",
+                "title": "Sample name",
+                "description": "Written as the sample column in the VCF. "
+                               "Letters, digits, '.', '_' and '-' only. Empty = run id.",
+            },
         },
     }
 
@@ -87,6 +93,11 @@ class SnippyFastaPipeline(Pipeline):
                 f"(MAX_STAGE_MEMORY_GB={MAX_STAGE_MEMORY_GB:g}, minus 1GB headroom)"
             )
 
+        # Without --rgid Snippy names the VCF sample after the --outdir folder,
+        # which here is always "snippy". The run id is the fallback so every
+        # VCF still carries a unique, traceable name.
+        sample_name = str(ctx.param("sample_name", "") or "").strip() or ctx.run_id
+
         # ---------------- Snippy ----------------
         snippy_out = ctx.work_dir / "snippy"
         with ctx.stage("snippy"):
@@ -98,6 +109,7 @@ class SnippyFastaPipeline(Pipeline):
                     "--ref", str(REFERENCE),
                     "--ctgs", str(fasta),
                     "--outdir", str(snippy_out),
+                    "--rgid", sample_name,
                     "--ram", str(ram),
                     "--cpus", str(cpus),
                     "--mincov", str(int(ctx.param("mincov", 10))),
